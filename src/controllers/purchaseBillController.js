@@ -1,0 +1,402 @@
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+// Create Purchase Bill (Financial Posting)
+const createBill = async (req, res) => {
+    try {
+        const { billNumber, date, dueDate, vendorId, purchaseOrderId, grnId, items, notes, discountAmount, taxAmount, totalAmount, billingName, billingAddress, billingCity, billingState, billingZipCode, billingCountry, shippingName, shippingAddress, shippingCity, shippingState, shippingZipCode, shippingCountry, overallDiscount, overallDiscountType } = req.body;
+        const companyId = req.user?.companyId || req.query.companyId || req.body.companyId;
+
+        if (!billNumber || !vendorId || !items || items.length === 0) {
+            return res.status(400).json({ success: false, message: 'Please provide all required fields' });
+        }
+
+        const billItems = items.map(item => ({
+            productId: item.productId ? parseInt(item.productId) : null,
+            warehouseId: item.warehouseId ? parseInt(item.warehouseId) : null,
+            description: item.description,
+            quantity: parseFloat(item.quantity),
+            rate: parseFloat(item.rate),
+            discount: parseFloat(item.discount || 0),
+            taxRate: parseFloat(item.taxRate || 0),
+            amount: parseFloat(item.amount)
+        }));
+
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Create Purchase Bill
+            const bill = await tx.purchasebill.create({
+                data: {
+                    billNumber,
+                    date: new Date(date),
+                    dueDate: dueDate ? new Date(dueDate) : null,
+                    vendorId: parseInt(vendorId),
+                    purchaseOrderId: purchaseOrderId ? parseInt(purchaseOrderId) : null,
+                    grnId: grnId ? parseInt(grnId) : null,
+                    companyId: parseInt(companyId),
+                    subtotal: parseFloat(totalAmount) - parseFloat(taxAmount) + parseFloat(discountAmount), // Approx
+                    discountAmount: parseFloat(discountAmount),
+                    taxAmount: parseFloat(taxAmount),
+                    totalAmount: parseFloat(totalAmount),
+                    balanceAmount: parseFloat(totalAmount),
+                    status: 'UNPAID',
+                    notes,
+                    billingName,
+                    billingAddress,
+                    billingCity,
+                    billingState,
+                    billingZipCode,
+                    billingCountry,
+                    shippingName,
+                    shippingAddress,
+                    shippingCity,
+                    shippingState,
+                    shippingZipCode,
+                    shippingCountry,
+                    overallDiscount: overallDiscount ? parseFloat(overallDiscount) : 0,
+                    overallDiscountType: overallDiscountType || 'percentage',
+                    purchasebillitem: {
+                        create: billItems
+                    }
+                },
+                include: { purchasebillitem: true }
+            });
+
+            // Update linked PO status if exists
+            if (purchaseOrderId) {
+                await tx.purchaseorder.update({
+                    where: { id: parseInt(purchaseOrderId) },
+                    data: { status: 'COMPLETED' }
+                });
+            }
+
+            // Update linked GRN status if exists
+            if (grnId) {
+                await tx.goodsreceiptnote.update({
+                    where: { id: parseInt(grnId) },
+                    data: { status: 'Invoiced' }
+                });
+            }
+
+            // 2. Ledger Posting (Dr Purchase/Inventory, Cr Vendor)
+            // Retrieve Vendor Ledger
+            const vendor = await tx.vendor.findUnique({ where: { id: parseInt(vendorId) }, include: { ledger: true } });
+            if (!vendor || !vendor.ledger) throw new Error('Vendor ledger not found. Please link a ledger to this vendor first.');
+
+            // Retrieve Purchase Ledger (Dynamic: ideally from product category or default)
+            // Retrieve Purchase Ledger (Dynamic: ideally from product category or default)
+            let purchaseLedger = await tx.ledger.findFirst({
+                where: { companyId: parseInt(companyId), name: 'Purchases' }
+            });
+
+            // Auto-create Ledger if missing
+            if (!purchaseLedger) {
+                // 1. Find or Create 'Expenses' Group
+                let expenseGroup = await tx.accountgroup.findFirst({
+                    where: { companyId: parseInt(companyId), name: 'Expenses' }
+                });
+                if (!expenseGroup) {
+                    expenseGroup = await tx.accountgroup.create({
+                        data: {
+                            companyId: parseInt(companyId),
+                            name: 'Expenses',
+                            type: 'EXPENSES'
+                        }
+                    });
+                }
+
+                // 2. Find or Create 'Purchase Accounts' SubGroup
+                let purchaseSubGroup = await tx.accountsubgroup.findFirst({
+                    where: { companyId: parseInt(companyId), name: 'Purchase Accounts' }
+                });
+                if (!purchaseSubGroup) {
+                    purchaseSubGroup = await tx.accountsubgroup.create({
+                        data: {
+                            companyId: parseInt(companyId),
+                            name: 'Purchase Accounts',
+                            groupId: expenseGroup.id
+                        }
+                    });
+                }
+
+                // 3. Create Ledger
+                purchaseLedger = await tx.ledger.create({
+                    data: {
+                        name: 'Purchases',
+                        groupId: expenseGroup.id,
+                        subGroupId: purchaseSubGroup.id,
+                        companyId: parseInt(companyId),
+                        openingBalance: 0,
+                        currentBalance: 0,
+                        isControlAccount: false,
+                        isEnabled: true,
+                        description: 'General Purchases Account'
+                    }
+                });
+            }
+
+            const debitLedgerId = purchaseLedger.id;
+            const creditLedgerId = vendor.ledger.id;
+
+            // Create Journal Entry
+            const journalEntry = await tx.journalentry.create({
+                data: {
+                    date: new Date(date),
+                    voucherNumber: billNumber,
+                    narration: `Purchase Bill #${billNumber}`,
+                    companyId: parseInt(companyId),
+                }
+            });
+
+            // Credit Vendor (Liability Increase)
+            await tx.transaction.create({
+                data: {
+                    date: new Date(date),
+                    amount: parseFloat(totalAmount),
+                    debitLedgerId: debitLedgerId, // Purchase Dr
+                    creditLedgerId: creditLedgerId, // Vendor Cr
+                    voucherType: 'PURCHASE',
+                    voucherNumber: billNumber,
+                    companyId: parseInt(companyId),
+                    journalEntryId: journalEntry.id,
+                    purchaseBillId: bill.id, // Linked
+                    narration: 'Purchase Bill Booking'
+                }
+            });
+
+            // Update Vendor Balance (Credit increases)
+            await tx.vendor.update({
+                where: { id: parseInt(vendorId) },
+                data: { accountBalance: { increment: parseFloat(totalAmount) } }
+            });
+
+            // Update Ledger Balances
+            await tx.ledger.update({
+                where: { id: creditLedgerId },
+                data: { currentBalance: { increment: parseFloat(totalAmount) } }
+            });
+            await tx.ledger.update({
+                where: { id: debitLedgerId },
+                data: { currentBalance: { increment: parseFloat(totalAmount) } }
+            });
+
+            return bill;
+        });
+
+        res.status(201).json({ success: true, data: result });
+    } catch (error) {
+        console.error('Create Purchase Bill Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getBills = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const bills = await prisma.purchasebill.findMany({
+            where: { companyId: parseInt(companyId) },
+            include: {
+                vendor: true,
+                purchasebillitem: {
+                    include: {
+                        product: true,
+                        warehouse: true
+                    }
+                },
+                purchaseorder: true,
+                goodsreceiptnote: true,
+                purchasereturn: true
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.status(200).json({ success: true, data: bills });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getBillById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user?.companyId || req.query.companyId;
+        const bill = await prisma.purchasebill.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: {
+                vendor: true,
+                purchasebillitem: {
+                    include: {
+                        product: true,
+                        warehouse: true
+                    }
+                },
+                purchaseorder: true,
+                goodsreceiptnote: true,
+                payment: true
+            }
+        });
+        if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
+        res.status(200).json({ success: true, data: bill });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const deleteBill = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user?.companyId || req.query.companyId;
+
+        const bill = await prisma.purchasebill.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: { transactions: true }
+        });
+
+        if (!bill) return res.status(404).json({ success: false, message: 'Bill not found' });
+
+        await prisma.$transaction(async (tx) => {
+            // 1. Revert Ledger Balances using transactions
+            for (const trans of bill.transactions) {
+                await tx.ledger.update({
+                    where: { id: trans.debitLedgerId },
+                    data: { currentBalance: { decrement: trans.amount } }
+                });
+                await tx.ledger.update({
+                    where: { id: trans.creditLedgerId },
+                    data: { currentBalance: { decrement: trans.amount } }
+                });
+            }
+
+            // 2. Revert Vendor Balance
+            await tx.vendor.update({
+                where: { id: bill.vendorId },
+                data: { accountBalance: { decrement: bill.totalAmount } }
+            });
+
+            // 3. Delete related transactions and journal entries
+            const journalEntryIds = [...new Set(bill.transactions.map(t => t.journalEntryId).filter(Boolean))];
+
+            await tx.transaction.deleteMany({ where: { purchaseBillId: bill.id } });
+            await tx.journalentry.deleteMany({ where: { id: { in: journalEntryIds } } });
+
+            // 4. Delete Bill Items and Bill
+            await tx.purchasebillitem.deleteMany({ where: { purchaseBillId: bill.id } });
+            await tx.purchasebill.delete({ where: { id: bill.id } });
+        });
+
+        res.status(200).json({ success: true, message: 'Bill deleted successfully' });
+    } catch (error) {
+        console.error('Delete Bill Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const updateBill = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { notes, dueDate, items, totalAmount, taxAmount, discountAmount, billingName, billingAddress, billingCity, billingState, billingZipCode, billingCountry, shippingName, shippingAddress, shippingCity, shippingState, shippingZipCode, shippingCountry, overallDiscount, overallDiscountType } = req.body;
+        const companyId = req.user?.companyId || req.query.companyId || req.body.companyId;
+
+        const updated = await prisma.$transaction(async (tx) => {
+            // If items are provided, we should ideally handle the complexity of ledger re-balancing.
+            // For now, let's update the bill and its items.
+
+            if (items && items.length > 0) {
+                // Delete old items
+                await tx.purchasebillitem.deleteMany({
+                    where: { purchaseBillId: parseInt(id) }
+                });
+
+                // Create new items
+                const billItems = items.map(item => ({
+                    productId: item.productId ? parseInt(item.productId) : null,
+                    warehouseId: item.warehouseId ? parseInt(item.warehouseId) : null,
+                    description: item.description,
+                    quantity: parseFloat(item.quantity),
+                    rate: parseFloat(item.rate),
+                    discount: parseFloat(item.discount || 0),
+                    taxRate: parseFloat(item.taxRate || 0),
+                    amount: parseFloat(item.amount),
+                    purchaseBillId: parseInt(id)
+                }));
+
+                await tx.purchasebillitem.createMany({
+                    data: billItems
+                });
+            }
+
+            return await tx.purchasebill.update({
+                where: { id: parseInt(id), companyId: parseInt(companyId) },
+                data: {
+                    notes,
+                    dueDate: dueDate ? new Date(dueDate) : undefined,
+                    totalAmount: totalAmount ? parseFloat(totalAmount) : undefined,
+                    taxAmount: taxAmount ? parseFloat(taxAmount) : undefined,
+                    discountAmount: discountAmount ? parseFloat(discountAmount) : undefined,
+                    // If totalAmount changed, we might need to update balanceAmount too.
+                    balanceAmount: totalAmount ? parseFloat(totalAmount) : undefined,
+                    billingName,
+                    billingAddress,
+                    billingCity,
+                    billingState,
+                    billingZipCode,
+                    billingCountry,
+                    shippingName,
+                    shippingAddress,
+                    shippingCity,
+                    shippingState,
+                    shippingZipCode,
+                    shippingCountry,
+                    overallDiscount: overallDiscount ? parseFloat(overallDiscount) : undefined,
+                    overallDiscountType: overallDiscountType || undefined
+                },
+                include: {
+                    purchasebillitem: {
+                        include: {
+                            product: true,
+                            warehouse: true
+                        }
+                    }
+                }
+            });
+        });
+
+        res.status(200).json({ success: true, data: updated });
+    } catch (error) {
+        console.error('Update Purchase Bill Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getNextNumber = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID Missing' });
+
+        const lastBill = await prisma.purchasebill.findFirst({
+            where: { companyId: parseInt(companyId) },
+            orderBy: { id: 'desc' }
+        });
+
+        let nextNumber = 'PB-101'; // Default start
+        if (lastBill && lastBill.billNumber) {
+            // Try to extract number
+            const lastNumStr = lastBill.billNumber.replace(/\D/g, '');
+            if (lastNumStr) {
+                const lastNum = parseInt(lastNumStr);
+                nextNumber = `PB-${lastNum + 1}`;
+            }
+        }
+
+        res.status(200).json({ success: true, nextNumber });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+module.exports = {
+    createBill,
+    getBills,
+    getBillById,
+    updateBill,
+    deleteBill,
+    getNextNumber
+};
