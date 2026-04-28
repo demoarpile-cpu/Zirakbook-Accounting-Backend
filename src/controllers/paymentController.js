@@ -117,6 +117,8 @@ const createPayment = async (req, res) => {
             });
 
             return payment;
+        }, {
+            timeout: 30000
         });
 
         res.status(201).json({ success: true, data: result });
@@ -336,6 +338,8 @@ const updatePayment = async (req, res) => {
             });
 
             return updatedPayment;
+        }, {
+            timeout: 30000
         });
 
         res.json(result);
@@ -408,6 +412,8 @@ const deletePayment = async (req, res) => {
             await tx.payment.delete({
                 where: { id: parseInt(id), companyId: parseInt(companyId) }
             });
+        }, {
+            timeout: 30000
         });
 
         res.json({ success: true, message: 'Payment deleted successfully' });

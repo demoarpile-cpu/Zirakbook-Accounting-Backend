@@ -221,7 +221,7 @@ const createInvoice = async (req, res) => {
 
                             // 2. Decrement Stock
                             await tx.stock.updateMany({
-                                where: { productId: item.productId, warehouseId: item.warehouseId },
+                                    where: { productId: item.productId, warehouseId: item.warehouseId },
                                 data: { quantity: { decrement: item.quantity } }
                             });
 
@@ -325,6 +325,8 @@ const createInvoice = async (req, res) => {
             }
 
             return invoice;
+        }, {
+            timeout: 30000 // 30 seconds timeout
         });
 
         res.status(201).json({ success: true, data: result });

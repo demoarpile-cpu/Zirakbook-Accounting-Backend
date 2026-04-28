@@ -86,6 +86,8 @@ const createReceipt = async (req, res) => {
             });
 
             return receipt;
+        }, {
+            timeout: 30000
         });
 
         res.status(201).json({ success: true, data: result });
@@ -124,16 +126,19 @@ const updateReceipt = async (req, res) => {
             }
 
             // Reverse ledger balances
-            await tx.ledger.update({
-                where: { id: existingReceipt.cashBankAccountId },
-                data: { currentBalance: { decrement: existingReceipt.amount } }
-            });
+            if (existingReceipt.cashBankAccountId) {
+                await tx.ledger.update({
+                    where: { id: existingReceipt.cashBankAccountId },
+                    data: { currentBalance: { decrement: existingReceipt.amount } }
+                });
+            }
 
-            const customer = await tx.customer.findUnique({ where: { id: existingReceipt.customerId } });
-            await tx.ledger.update({
-                where: { id: customer.ledgerId },
-                data: { currentBalance: { increment: existingReceipt.amount } }
-            });
+            if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
+                await tx.ledger.update({
+                    where: { id: existingReceipt.customer.ledgerId },
+                    data: { currentBalance: { increment: existingReceipt.amount } }
+                });
+            }
 
             // Delete old transaction
             await tx.transaction.deleteMany({ where: { receiptId: parseInt(id) } });
@@ -164,15 +169,19 @@ const updateReceipt = async (req, res) => {
                 });
             }
 
-            await tx.ledger.update({
-                where: { id: finalBankId },
-                data: { currentBalance: { increment: finalAmount } }
-            });
+            if (finalBankId) {
+                await tx.ledger.update({
+                    where: { id: finalBankId },
+                    data: { currentBalance: { increment: finalAmount } }
+                });
+            }
 
-            await tx.ledger.update({
-                where: { id: customer.ledgerId },
-                data: { currentBalance: { decrement: finalAmount } }
-            });
+            if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
+                await tx.ledger.update({
+                    where: { id: existingReceipt.customer.ledgerId },
+                    data: { currentBalance: { decrement: finalAmount } }
+                });
+            }
 
             // Create new transaction
             await tx.transaction.create({
@@ -191,6 +200,8 @@ const updateReceipt = async (req, res) => {
             });
 
             return updatedReceipt;
+        }, {
+            timeout: 30000
         });
 
         res.status(200).json({ success: true, data: result });
@@ -227,20 +238,25 @@ const deleteReceipt = async (req, res) => {
                 });
             }
 
-            await tx.ledger.update({
-                where: { id: existingReceipt.cashBankAccountId },
-                data: { currentBalance: { decrement: existingReceipt.amount } }
-            });
+            if (existingReceipt.cashBankAccountId) {
+                await tx.ledger.update({
+                    where: { id: existingReceipt.cashBankAccountId },
+                    data: { currentBalance: { decrement: existingReceipt.amount } }
+                });
+            }
 
-            const customer = await tx.customer.findUnique({ where: { id: existingReceipt.customerId } });
-            await tx.ledger.update({
-                where: { id: customer.ledgerId },
-                data: { currentBalance: { increment: existingReceipt.amount } }
-            });
+            if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
+                await tx.ledger.update({
+                    where: { id: existingReceipt.customer.ledgerId },
+                    data: { currentBalance: { increment: existingReceipt.amount } }
+                });
+            }
 
             // Delete transactions and receipt
             await tx.transaction.deleteMany({ where: { receiptId: parseInt(id) } });
             await tx.receipt.delete({ where: { id: parseInt(id) } });
+        }, {
+            timeout: 30000
         });
 
         res.status(200).json({ success: true, message: 'Receipt deleted successfully' });

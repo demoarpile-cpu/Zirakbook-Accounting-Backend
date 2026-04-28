@@ -180,6 +180,8 @@ const createBill = async (req, res) => {
             });
 
             return bill;
+        }, {
+            timeout: 30000
         });
 
         res.status(201).json({ success: true, data: result });
@@ -280,6 +282,8 @@ const deleteBill = async (req, res) => {
             // 4. Delete Bill Items and Bill
             await tx.purchasebillitem.deleteMany({ where: { purchaseBillId: bill.id } });
             await tx.purchasebill.delete({ where: { id: bill.id } });
+        }, {
+            timeout: 30000
         });
 
         res.status(200).json({ success: true, message: 'Bill deleted successfully' });
@@ -357,6 +361,8 @@ const updateBill = async (req, res) => {
                     }
                 }
             });
+        }, {
+            timeout: 30000
         });
 
         res.status(200).json({ success: true, data: updated });

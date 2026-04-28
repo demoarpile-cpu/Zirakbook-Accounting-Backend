@@ -679,9 +679,26 @@ const updateLedger = async (id, companyId, data) => {
 // Delete Ledger
 const deleteLedger = async (id, companyId) => {
     try {
+        const ledgerId = parseInt(id);
+
+        // 1. Check for associated transactions
+        const transactionCount = await prisma.transaction.count({
+            where: {
+                companyId: companyId,
+                OR: [
+                    { debitLedgerId: ledgerId },
+                    { creditLedgerId: ledgerId }
+                ]
+            }
+        });
+
+        if (transactionCount > 0) {
+            throw new Error('Cannot delete account because it has associated transactions. Please delete the transactions first.');
+        }
+
         const result = await prisma.ledger.deleteMany({
             where: {
-                id: parseInt(id),
+                id: ledgerId,
                 companyId: companyId
             }
         });
