@@ -515,11 +515,11 @@ const getBalanceSheet = async (req, res) => {
                 const isCurrent = currentAssetKeywords.some(s => groupName.includes(s));
 
                 if (isCurrent) {
-                    reportData.assets.current.push({ name, value: balance });
+                    reportData.assets.current.push({ id: ledger.id, ledgerId: ledger.id, name, value: balance });
                 } else {
                     // Default to Fixed if not explicitly Current
                     // This catches Property, Equipment, Investments, etc.
-                    reportData.assets.fixed.push({ name, value: balance });
+                    reportData.assets.fixed.push({ id: ledger.id, ledgerId: ledger.id, name, value: balance });
                 }
                 reportData.assets.total += balance;
 
@@ -540,15 +540,15 @@ const getBalanceSheet = async (req, res) => {
                 // Liabilities are usually Credits (+ve in our calculation above).
                 // Display as positive in report.
                 if (isCurrent) {
-                    reportData.liabilities.current.push({ name, value: balance });
+                    reportData.liabilities.current.push({ id: ledger.id, name, value: balance });
                 } else {
                     // Long Term Debt, Loans, etc.
-                    reportData.liabilities.longTerm.push({ name, value: balance });
+                    reportData.liabilities.longTerm.push({ id: ledger.id, name, value: balance });
                 }
                 reportData.liabilities.total += balance;
 
             } else if (groupType === 'EQUITY') {
-                reportData.equity.items.push({ name, value: balance });
+                reportData.equity.items.push({ id: ledger.id, name, value: balance });
                 reportData.equity.total += balance;
 
             } else if (groupType === 'INCOME') {
@@ -702,16 +702,20 @@ const getProfitLoss = async (req, res) => {
                         totalExpense += amount;
                         monthlyData[month].expense += amount;
 
-                        // Category Breakdown
-                        const catName = debitLedger.accountgroup.name;
-                        expenseCategories[catName] = (expenseCategories[catName] || 0) + amount;
+                        const ledgerId = debitLedger.id;
+                        if (!expenseCategories[ledgerId]) {
+                            expenseCategories[ledgerId] = { id: ledgerId, name: debitLedger.name, value: 0 };
+                        }
+                        expenseCategories[ledgerId].value += amount;
                     } else if (debitLedger.accountgroup.type === 'INCOME') {
-                        // Debiting an Income account reduces income (e.g. Sales Return)
                         totalIncome -= amount;
                         monthlyData[month].income -= amount;
 
-                        const catName = debitLedger.accountgroup.name;
-                        incomeCategories[catName] = (incomeCategories[catName] || 0) - amount;
+                        const ledgerId = debitLedger.id;
+                        if (!incomeCategories[ledgerId]) {
+                            incomeCategories[ledgerId] = { id: ledgerId, name: debitLedger.name, value: 0 };
+                        }
+                        incomeCategories[ledgerId].value -= amount;
                     }
                 }
 
@@ -721,15 +725,20 @@ const getProfitLoss = async (req, res) => {
                         totalIncome += amount;
                         monthlyData[month].income += amount;
 
-                        const catName = creditLedger.accountgroup.name;
-                        incomeCategories[catName] = (incomeCategories[catName] || 0) + amount;
+                        const ledgerId = creditLedger.id;
+                        if (!incomeCategories[ledgerId]) {
+                            incomeCategories[ledgerId] = { id: ledgerId, name: creditLedger.name, value: 0 };
+                        }
+                        incomeCategories[ledgerId].value += amount;
                     } else if (creditLedger.accountgroup.type === 'EXPENSES') {
-                        // Crediting an Expense account reduces expense (e.g. Purchase Return)
                         totalExpense -= amount;
                         monthlyData[month].expense -= amount;
 
-                        const catName = creditLedger.accountgroup.name;
-                        expenseCategories[catName] = (expenseCategories[catName] || 0) - amount;
+                        const ledgerId = creditLedger.id;
+                        if (!expenseCategories[ledgerId]) {
+                            expenseCategories[ledgerId] = { id: ledgerId, name: creditLedger.name, value: 0 };
+                        }
+                        expenseCategories[ledgerId].value -= amount;
                     }
                 }
             });
@@ -772,8 +781,8 @@ const getProfitLoss = async (req, res) => {
             expense: currentData.monthlyData[i].expense
         }));
 
-        // Format Categories using Object.entries
-        const formatCats = (cats) => Object.entries(cats).map(([name, value]) => ({ name, value }));
+        // Format Categories using Object.values since they are now objects
+        const formatCats = (cats) => Object.values(cats);
 
         res.status(200).json({
             success: true,
