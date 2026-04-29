@@ -26,4 +26,28 @@ const authorizeRoles = (...allowedRoles) => {
     };
 };
 
-module.exports = { authenticateToken, authorizeRoles };
+const authorizePermissions = (requiredPermission) => {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ message: 'Authentication required' });
+        }
+
+        // Superadmin and Company Owner bypass all permission checks
+        if (req.user.role === 'SUPERADMIN' || req.user.role === 'COMPANY') {
+            return next();
+        }
+
+        const permissions = req.user.permissions || [];
+        
+        if (!permissions.includes(requiredPermission)) {
+            return res.status(403).json({ 
+                message: `Access denied: You do not have permission to ${requiredPermission}`,
+                requiredPermission 
+            });
+        }
+
+        next();
+    };
+};
+
+module.exports = { authenticateToken, authorizeRoles, authorizePermissions };

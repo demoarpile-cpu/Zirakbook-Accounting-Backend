@@ -13,9 +13,31 @@ const router = express.Router();
 
 // Middleware to check if user has access to this company
 const checkCompanyAccess = (req, res, next) => {
-    if (req.user.role === 'SUPERADMIN') return next();
-    if (req.user.role === 'COMPANY' && req.user.companyId === parseInt(req.params.id)) return next();
-    return res.status(403).json({ message: 'Access denied: You do not have permission to access this company' });
+    const userRole = (req.user.role || '').toUpperCase();
+    
+    if (userRole === 'SUPERADMIN') return next();
+    
+    // Convert to numbers for safe comparison
+    const requestedCompanyId = Number(req.params.id);
+    const userCompanyId = Number(req.user.companyId);
+
+    if (userCompanyId === requestedCompanyId) {
+        // Allow GET request for all roles within the company (COMPANY, ADMIN, USER, USERS, etc.)
+        if (req.method === 'GET') return next();
+        
+        // For other requests (like PUT), only allow COMPANY and ADMIN roles
+        if (['COMPANY', 'ADMIN'].includes(userRole)) return next();
+        
+        return res.status(403).json({ 
+            message: 'Access denied: Your role does not have permission to modify this company',
+            debug: { role: userRole, method: req.method } 
+        });
+    }
+
+    return res.status(403).json({ 
+        message: 'Access denied: You do not belong to this company',
+        debug: { userCompanyId, requestedCompanyId }
+    });
 };
 
 // Only Superadmin can create or delete companies

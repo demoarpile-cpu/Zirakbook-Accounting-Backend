@@ -1,17 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const customerController = require('../controllers/customerController');
-const { authenticateToken } = require('../middlewares/authMiddleware');
+const { authenticateToken, authorizePermissions } = require('../middlewares/authMiddleware');
 
 // All routes require authentication
 router.use(authenticateToken);
 
 // Customer Routes
-router.post('/', customerController.createCustomer);
-router.get('/', customerController.getAllCustomers);
-router.get('/:id', customerController.getCustomerById);
-router.put('/:id', customerController.updateCustomer);
-router.delete('/:id', customerController.deleteCustomer);
-router.get('/:id/statement', customerController.getCustomerStatement);
+router.post('/', authorizePermissions('create accounts'), customerController.createCustomer);
+router.get('/', authorizePermissions('view accounts'), customerController.getAllCustomers);
+router.get('/:id', authorizePermissions('view accounts'), customerController.getCustomerById);
+router.put('/:id', authorizePermissions('edit accounts'), customerController.updateCustomer);
+router.delete('/:id', authorizePermissions('delete accounts'), customerController.deleteCustomer);
+router.get('/:id/statement', authorizePermissions('view accounts'), customerController.getCustomerStatement);
 
 module.exports = router;

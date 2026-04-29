@@ -112,7 +112,7 @@ const createVoucher = async (req, res) => {
 
             // Also save to voucher table so it appears in the voucher list
             const totalDrAmount = journalRows.reduce((sum, r) => sum + (parseFloat(r.debit) || 0), 0);
-            
+
             // Map journal rows to voucher items for visibility in "View Voucher" modal
             const voucherItems = await Promise.all(journalRows.map(async (row) => {
                 const ledger = await prisma.ledger.findUnique({ where: { id: parseInt(row.accountId) } });

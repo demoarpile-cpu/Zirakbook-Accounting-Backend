@@ -58,12 +58,6 @@ const login = async (req, res) => {
             return res.status(403).json({ message: 'Your account has been disabled. Please contact your administrator.' });
         }
 
-        const token = jwt.sign(
-            { userId: user.id, role: user.role, companyId: user.companyId },
-            process.env.JWT_SECRET,
-            { expiresIn: '1d' }
-        );
-
         let permissions = [];
         let planModules = [];
 
@@ -100,6 +94,18 @@ const login = async (req, res) => {
         } catch (e) {
             console.log("Perm fetch error", e);
         }
+
+        const token = jwt.sign(
+            { 
+                userId: user.id, 
+                role: user.role, 
+                companyId: user.companyId,
+                permissions: permissions,
+                planModules: planModules
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '1d' }
+        );
 
         res.json({
             message: 'Login successful',

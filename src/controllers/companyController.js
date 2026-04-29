@@ -73,13 +73,13 @@ const createCompany = async (req, res) => {
 
             // Module specific mapping (gated menus)
             const moduleMapping = {
-                'account': ["manage accounts", "create accounts", "edit accounts", "delete accounts"],
-                'accounts': ["manage accounts", "create accounts", "edit accounts", "delete accounts"],
-                'inventory': ["manage inventory", "create inventory", "edit inventory", "delete inventory"],
-                'sales': ["manage sales", "create sales", "edit sales", "delete sales", "show sales", "send sales"],
-                'purchase': ["manage purchases", "create purchases", "edit purchases", "delete purchases"],
-                'purchases': ["manage purchases", "create purchases", "edit purchases", "delete purchases"],
-                'pos': ["manage pos", "create pos", "edit pos", "delete pos"]
+                'account': ["manage accounts", "create accounts", "edit accounts", "delete accounts", "view accounts"],
+                'accounts': ["manage accounts", "create accounts", "edit accounts", "delete accounts", "view accounts"],
+                'inventory': ["manage inventory", "create inventory", "edit inventory", "delete inventory", "view inventory"],
+                'sales': ["manage sales", "create sales", "edit sales", "delete sales", "show sales", "send sales", "view sales"],
+                'purchase': ["manage purchases", "create purchases", "edit purchases", "delete purchases", "view purchases"],
+                'purchases': ["manage purchases", "create purchases", "edit purchases", "delete purchases", "view purchases"],
+                'pos': ["manage pos", "create pos", "edit pos", "delete pos", "view pos"]
             };
 
             enabledModules.forEach(modName => {
