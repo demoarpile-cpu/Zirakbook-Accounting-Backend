@@ -330,9 +330,120 @@ const updateReturn = async (req, res) => {
     }
 };
 
+// Delete Sales Return
+const deleteReturn = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user.companyId;
+
+        const salesReturn = await prisma.salesreturn.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: { salesreturnitem: true, customer: true }
+        });
+
+        if (!salesReturn) {
+            return res.status(404).json({ success: false, message: 'Sales return not found' });
+        }
+
+        await prisma.$transaction(async (tx) => {
+            // 1. Reverse Inventory Logic (Decrement Stock)
+            for (const item of salesReturn.salesreturnitem) {
+                await tx.stock.updateMany({
+                    where: {
+                        productId: item.productId,
+                        warehouseId: item.warehouseId
+                    },
+                    data: {
+                        quantity: { decrement: item.quantity }
+                    }
+                });
+
+                await tx.inventorytransaction.deleteMany({
+                    where: {
+                        productId: item.productId,
+                        toWarehouseId: item.warehouseId,
+                        reason: `Sales Return: ${salesReturn.returnNumber}`,
+                        companyId: parseInt(companyId)
+                    }
+                });
+            }
+
+            // 2. Reverse Invoice Balance update if linked
+            if (salesReturn.invoiceId) {
+                const invoice = await tx.invoice.findUnique({ where: { id: salesReturn.invoiceId } });
+                if (invoice) {
+                    const revPaid = Math.max(0, (invoice.paidAmount || 0) - salesReturn.totalAmount);
+                    const revBalance = (invoice.totalAmount || 0) - revPaid;
+
+                    await tx.invoice.update({
+                        where: { id: invoice.id },
+                        data: {
+                            paidAmount: revPaid,
+                            balanceAmount: revBalance,
+                            status: revBalance <= 0 ? 'PAID' : (revPaid > 0 ? 'PARTIAL' : 'UNPAID')
+                        }
+                    });
+                }
+            }
+
+            // 3. Reverse Accounting Entry
+            let returnLedger = await tx.ledger.findFirst({
+                where: { companyId: parseInt(companyId), name: { contains: 'Return' }, accountgroup: { type: 'EXPENSES' } }
+            });
+            if (!returnLedger) {
+                returnLedger = await tx.ledger.findFirst({
+                    where: { companyId: parseInt(companyId), name: { contains: 'Return' }, accountgroup: { type: 'INCOME' } }
+                });
+            }
+
+            if (returnLedger) {
+                await tx.ledger.update({
+                    where: { id: returnLedger.id },
+                    data: { currentBalance: { decrement: salesReturn.totalAmount } }
+                });
+            }
+
+            if (salesReturn.customer && salesReturn.customer.ledgerId) {
+                const customerLedger = await tx.ledger.findUnique({ where: { id: salesReturn.customer.ledgerId } });
+                if (customerLedger) {
+                    await tx.ledger.update({
+                        where: { id: salesReturn.customer.ledgerId },
+                        data: { currentBalance: { increment: salesReturn.totalAmount } }
+                    });
+                }
+            }
+
+            // 4. Delete Transactions and Sales Return
+            await tx.transaction.deleteMany({
+                where: {
+                    voucherNumber: salesReturn.autoVoucherNo,
+                    voucherType: 'SALES_RETURN',
+                    companyId: parseInt(companyId)
+                }
+            });
+
+            await tx.salesreturnitem.deleteMany({
+                where: { salesReturnId: parseInt(id) }
+            });
+
+            await tx.salesreturn.delete({
+                where: { id: parseInt(id) }
+            });
+        }, {
+            timeout: 30000
+        });
+
+        res.status(200).json({ success: true, message: 'Sales return deleted successfully' });
+    } catch (error) {
+        console.error('Sales Return Delete Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
     createReturn,
     getReturns,
     getReturnById,
-    updateReturn
+    updateReturn,
+    deleteReturn
 };

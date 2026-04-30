@@ -7,5 +7,6 @@ router.post('/', authenticateToken, salesReturnController.createReturn);
 router.get('/', authenticateToken, salesReturnController.getReturns);
 router.get('/:id', authenticateToken, salesReturnController.getReturnById);
 router.put('/:id', authenticateToken, salesReturnController.updateReturn);
+router.delete('/:id', authenticateToken, salesReturnController.deleteReturn);
 
 module.exports = router;
