@@ -117,27 +117,35 @@ const updateReceipt = async (req, res) => {
             // 1. Reverse previous effects
             if (existingReceipt.invoiceId) {
                 const invoice = await tx.invoice.findUnique({ where: { id: existingReceipt.invoiceId } });
-                const revPaid = (invoice.paidAmount || 0) - existingReceipt.amount;
-                const revBalance = (invoice.totalAmount || 0) - revPaid;
-                await tx.invoice.update({
-                    where: { id: existingReceipt.invoiceId },
-                    data: { paidAmount: revPaid, balanceAmount: revBalance, status: revBalance <= 0 ? 'PAID' : revPaid > 0 ? 'PARTIAL' : 'UNPAID' }
-                });
+                if (invoice) {
+                    const revPaid = (invoice.paidAmount || 0) - existingReceipt.amount;
+                    const revBalance = (invoice.totalAmount || 0) - revPaid;
+                    await tx.invoice.update({
+                        where: { id: existingReceipt.invoiceId },
+                        data: { paidAmount: revPaid, balanceAmount: revBalance, status: revBalance <= 0 ? 'PAID' : revPaid > 0 ? 'PARTIAL' : 'UNPAID' }
+                    });
+                }
             }
 
             // Reverse ledger balances
             if (existingReceipt.cashBankAccountId) {
-                await tx.ledger.update({
-                    where: { id: existingReceipt.cashBankAccountId },
-                    data: { currentBalance: { decrement: existingReceipt.amount } }
-                });
+                const bankLedger = await tx.ledger.findUnique({ where: { id: existingReceipt.cashBankAccountId } });
+                if (bankLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingReceipt.cashBankAccountId },
+                        data: { currentBalance: { decrement: existingReceipt.amount } }
+                    });
+                }
             }
 
             if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: existingReceipt.customer.ledgerId },
-                    data: { currentBalance: { increment: existingReceipt.amount } }
-                });
+                const customerLedger = await tx.ledger.findUnique({ where: { id: existingReceipt.customer.ledgerId } });
+                if (customerLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingReceipt.customer.ledgerId },
+                        data: { currentBalance: { increment: existingReceipt.amount } }
+                    });
+                }
             }
 
             // Delete old transaction
@@ -161,26 +169,34 @@ const updateReceipt = async (req, res) => {
 
             if (existingReceipt.invoiceId) {
                 const invoice = await tx.invoice.findUnique({ where: { id: existingReceipt.invoiceId } });
-                const newPaid = (invoice.paidAmount || 0) + finalAmount;
-                const newBalance = (invoice.totalAmount || 0) - newPaid;
-                await tx.invoice.update({
-                    where: { id: existingReceipt.invoiceId },
-                    data: { paidAmount: newPaid, balanceAmount: newBalance, status: newBalance <= 0 ? 'PAID' : 'PARTIAL' }
-                });
+                if (invoice) {
+                    const newPaid = (invoice.paidAmount || 0) + finalAmount;
+                    const newBalance = (invoice.totalAmount || 0) - newPaid;
+                    await tx.invoice.update({
+                        where: { id: existingReceipt.invoiceId },
+                        data: { paidAmount: newPaid, balanceAmount: newBalance, status: newBalance <= 0 ? 'PAID' : 'PARTIAL' }
+                    });
+                }
             }
 
             if (finalBankId) {
-                await tx.ledger.update({
-                    where: { id: finalBankId },
-                    data: { currentBalance: { increment: finalAmount } }
-                });
+                const bankLedger = await tx.ledger.findUnique({ where: { id: finalBankId } });
+                if (bankLedger) {
+                    await tx.ledger.update({
+                        where: { id: finalBankId },
+                        data: { currentBalance: { increment: finalAmount } }
+                    });
+                }
             }
 
             if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: existingReceipt.customer.ledgerId },
-                    data: { currentBalance: { decrement: finalAmount } }
-                });
+                const customerLedger = await tx.ledger.findUnique({ where: { id: existingReceipt.customer.ledgerId } });
+                if (customerLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingReceipt.customer.ledgerId },
+                        data: { currentBalance: { decrement: finalAmount } }
+                    });
+                }
             }
 
             // Create new transaction
@@ -190,9 +206,9 @@ const updateReceipt = async (req, res) => {
                     voucherType: 'RECEIPT',
                     voucherNumber: existingReceipt.receiptNumber,
                     debitLedgerId: finalBankId,
-                    creditLedgerId: customer.ledgerId,
+                    creditLedgerId: existingReceipt.customer.ledgerId,
                     amount: finalAmount,
-                    narration: `Updated Payment from ${customer.name}`,
+                    narration: `Updated Payment from ${existingReceipt.customer.name}`,
                     companyId: parseInt(companyId),
                     receiptId: parseInt(id),
                     invoiceId: existingReceipt.invoiceId
@@ -230,26 +246,34 @@ const deleteReceipt = async (req, res) => {
             // Reverse effects
             if (existingReceipt.invoiceId) {
                 const invoice = await tx.invoice.findUnique({ where: { id: existingReceipt.invoiceId } });
-                const revPaid = (invoice.paidAmount || 0) - existingReceipt.amount;
-                const revBalance = (invoice.totalAmount || 0) - revPaid;
-                await tx.invoice.update({
-                    where: { id: existingReceipt.invoiceId },
-                    data: { paidAmount: revPaid, balanceAmount: revBalance, status: revBalance <= 0 ? 'PAID' : revPaid > 0 ? 'PARTIAL' : 'UNPAID' }
-                });
+                if (invoice) {
+                    const revPaid = (invoice.paidAmount || 0) - existingReceipt.amount;
+                    const revBalance = (invoice.totalAmount || 0) - revPaid;
+                    await tx.invoice.update({
+                        where: { id: existingReceipt.invoiceId },
+                        data: { paidAmount: revPaid, balanceAmount: revBalance, status: revBalance <= 0 ? 'PAID' : revPaid > 0 ? 'PARTIAL' : 'UNPAID' }
+                    });
+                }
             }
 
             if (existingReceipt.cashBankAccountId) {
-                await tx.ledger.update({
-                    where: { id: existingReceipt.cashBankAccountId },
-                    data: { currentBalance: { decrement: existingReceipt.amount } }
-                });
+                const bankLedger = await tx.ledger.findUnique({ where: { id: existingReceipt.cashBankAccountId } });
+                if (bankLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingReceipt.cashBankAccountId },
+                        data: { currentBalance: { decrement: existingReceipt.amount } }
+                    });
+                }
             }
 
             if (existingReceipt.customer && existingReceipt.customer.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: existingReceipt.customer.ledgerId },
-                    data: { currentBalance: { increment: existingReceipt.amount } }
-                });
+                const customerLedger = await tx.ledger.findUnique({ where: { id: existingReceipt.customer.ledgerId } });
+                if (customerLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingReceipt.customer.ledgerId },
+                        data: { currentBalance: { increment: existingReceipt.amount } }
+                    });
+                }
             }
 
             // Delete transactions and receipt

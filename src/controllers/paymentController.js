@@ -243,10 +243,13 @@ const updatePayment = async (req, res) => {
 
             // Reverse Ledger & Vendor
             if (existingPayment.vendor?.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: existingPayment.vendor.ledgerId },
-                    data: { currentBalance: { increment: existingPayment.amount } }
-                });
+                const vendorLedger = await tx.ledger.findUnique({ where: { id: existingPayment.vendor.ledgerId } });
+                if (vendorLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingPayment.vendor.ledgerId },
+                        data: { currentBalance: { increment: existingPayment.amount } }
+                    });
+                }
                 await tx.vendor.update({
                     where: { id: existingPayment.vendorId },
                     data: { accountBalance: { increment: existingPayment.amount } }
@@ -254,10 +257,13 @@ const updatePayment = async (req, res) => {
             }
 
             if (existingPayment.cashBankAccountId) {
-                await tx.ledger.update({
-                    where: { id: existingPayment.cashBankAccountId },
-                    data: { currentBalance: { increment: existingPayment.amount } }
-                });
+                const bankLedger = await tx.ledger.findUnique({ where: { id: existingPayment.cashBankAccountId } });
+                if (bankLedger) {
+                    await tx.ledger.update({
+                        where: { id: existingPayment.cashBankAccountId },
+                        data: { currentBalance: { increment: existingPayment.amount } }
+                    });
+                }
             }
 
             // Delete old transactions
@@ -301,10 +307,13 @@ const updatePayment = async (req, res) => {
             const newBankId = cashBankAccountId ? parseInt(cashBankAccountId) : updatedPayment.cashBankAccountId;
 
             if (newVendor?.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: newVendor.ledgerId },
-                    data: { currentBalance: { decrement: parseFloat(amount) } }
-                });
+                const vendorLedger = await tx.ledger.findUnique({ where: { id: newVendor.ledgerId } });
+                if (vendorLedger) {
+                    await tx.ledger.update({
+                        where: { id: newVendor.ledgerId },
+                        data: { currentBalance: { decrement: parseFloat(amount) } }
+                    });
+                }
                 await tx.vendor.update({
                     where: { id: newVendor.id },
                     data: { accountBalance: { decrement: parseFloat(amount) } }
@@ -387,10 +396,13 @@ const deletePayment = async (req, res) => {
             // 2. Reverse Accounting Entries
             // CR Vendor (Liability Increases), DR Cash/Bank (Asset Increases)
             if (payment.vendor?.ledgerId) {
-                await tx.ledger.update({
-                    where: { id: payment.vendor.ledgerId },
-                    data: { currentBalance: { increment: payment.amount } }
-                });
+                const vendorLedger = await tx.ledger.findUnique({ where: { id: payment.vendor.ledgerId } });
+                if (vendorLedger) {
+                    await tx.ledger.update({
+                        where: { id: payment.vendor.ledgerId },
+                        data: { currentBalance: { increment: payment.amount } }
+                    });
+                }
                 await tx.vendor.update({
                     where: { id: payment.vendorId },
                     data: { accountBalance: { increment: payment.amount } }
@@ -398,10 +410,13 @@ const deletePayment = async (req, res) => {
             }
 
             if (payment.cashBankAccountId) {
-                await tx.ledger.update({
-                    where: { id: payment.cashBankAccountId },
-                    data: { currentBalance: { increment: payment.amount } }
-                });
+                const bankLedger = await tx.ledger.findUnique({ where: { id: payment.cashBankAccountId } });
+                if (bankLedger) {
+                    await tx.ledger.update({
+                        where: { id: payment.cashBankAccountId },
+                        data: { currentBalance: { increment: payment.amount } }
+                    });
+                }
             }
 
             // 3. Delete Transactions and Payment
