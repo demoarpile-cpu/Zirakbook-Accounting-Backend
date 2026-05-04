@@ -1,6 +1,64 @@
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
+// Helper to calculate total inventory value for a company as of now
+const calculateInventoryValue = async (companyId) => {
+    try {
+        const stocks = await prisma.stock.findMany({
+            where: { product: { companyId: parseInt(companyId) } },
+            include: { product: true }
+        });
+        
+        let totalValue = 0;
+        stocks.forEach(s => {
+            const price = s.product.purchasePrice || s.product.initialCost || 0;
+            totalValue += (s.quantity * price);
+        });
+        return totalValue;
+    } catch (error) {
+        console.error("Error calculating inventory value:", error);
+        return 0;
+    }
+};
+
+// Helper to ensure critical inventory ledgers exist
+const ensureInventoryLedgers = async (companyId) => {
+    try {
+        const companyIdInt = parseInt(companyId);
+        
+        // Find Groups
+        const assetsGroup = await prisma.accountgroup.findFirst({ where: { companyId: companyIdInt, type: 'ASSETS' } });
+        const equityGroup = await prisma.accountgroup.findFirst({ where: { companyId: companyIdInt, type: 'EQUITY' } });
+        
+        if (!assetsGroup || !equityGroup) return;
+
+        // Check/Create Inventory Asset
+        await prisma.ledger.upsert({
+            where: { companyId_name: { companyId: companyIdInt, name: 'Inventory Asset' } },
+            update: {},
+            create: {
+                name: 'Inventory Asset',
+                groupId: assetsGroup.id,
+                companyId: companyIdInt,
+                isControlAccount: true
+            }
+        });
+
+        // Check/Create Opening Balance Equity
+        await prisma.ledger.upsert({
+            where: { companyId_name: { companyId: companyIdInt, name: 'Opening Balance Equity' } },
+            update: {},
+            create: {
+                name: 'Opening Balance Equity',
+                groupId: equityGroup.id,
+                companyId: companyIdInt
+            }
+        });
+    } catch (e) {
+        console.error("Error ensuring inventory ledgers:", e);
+    }
+};
+
 const getSalesReport = async (req, res) => {
     try {
         const companyId = req.user?.companyId || req.query.companyId;
@@ -493,7 +551,7 @@ const getBalanceSheet = async (req, res) => {
             }
 
             // Only process non-zero balances (or significant ones)
-            if (Math.abs(balance) < 0.01) return;
+            if (Math.abs(balance) < 0.01 && !ledger.name.toLowerCase().includes('inventory')) return;
 
             const name = ledger.name;
 
@@ -562,6 +620,22 @@ const getBalanceSheet = async (req, res) => {
         // Profit = Income - Expense
         const netProfit = totalIncome - totalExpense;
         reportData.netProfit = netProfit;
+
+        // 3. Dynamic Inventory Adjustment (Closing Stock)
+        // If we are showing inventory in Assets, we must reflect its value in Profit (Ending Inventory)
+        const currentInventoryValue = await calculateInventoryValue(companyId);
+        
+        // Find if any ledger already represents Inventory
+        const hasInventoryLedger = reportData.assets.current.some(a => a.name.toLowerCase().includes('inventory'));
+        if (!hasInventoryLedger && currentInventoryValue > 0) {
+            reportData.assets.current.push({ name: 'Closing Stock (Inventory)', value: currentInventoryValue });
+            reportData.assets.total += currentInventoryValue;
+            
+            // Adjust Profit: Profit = (Income + ClosingStock) - Expense
+            // We add Closing Stock to the Equity side to balance
+            reportData.equity.items.push({ name: 'Closing Stock Adjustment', value: currentInventoryValue });
+            reportData.equity.total += currentInventoryValue;
+        }
 
         // Add Net Profit to Equity
         reportData.equity.items.push({ name: 'Net Profit/Loss', value: netProfit });
@@ -904,219 +978,191 @@ const getVatReport = async (req, res) => {
     }
 };
 
-// Get Day Book Report
+// Get Day Book Report (Consolidated from all source tables)
 const getDayBook = async (req, res) => {
     try {
         const companyId = req.user?.companyId || req.query.companyId;
         if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
 
-        const dateStr = req.query.date || new Date().toISOString().split('T')[0];
-        const startDate = new Date(dateStr);
-        startDate.setHours(0, 0, 0, 0);
-        const endDate = new Date(dateStr);
-        endDate.setHours(23, 59, 59, 999);
+        const { startDate, endDate, voucherType, ledgerId } = req.query;
 
-        // 1. Fetch Invoices (Sales)
-        const invoices = await prisma.invoice.findMany({
-            where: {
-                companyId: parseInt(companyId),
-                date: { gte: startDate, lte: endDate }
-            },
-            include: { customer: { select: { name: true } } }
-        });
+        // Date Range Logic
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = { gte: new Date(startDate), lte: new Date(endDate) };
+        } else {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            dateFilter = { gte: today, lt: tomorrow };
+        }
 
-        // 2. Fetch POS Invoices (Sales)
-        const posInvoices = await prisma.posinvoice.findMany({
-            where: {
-                companyId: parseInt(companyId),
-                createdAt: { gte: startDate, lte: endDate }
-            },
-            include: { customer: { select: { name: true } } }
-        });
+        const companyIdInt = parseInt(companyId);
+        const lId = ledgerId ? parseInt(ledgerId) : null;
 
-        // 3. Fetch Bills (Purchases)
-        const bills = await prisma.purchasebill.findMany({
-            where: {
-                companyId: parseInt(companyId),
-                date: { gte: startDate, lte: endDate }
-            },
-            include: { vendor: { select: { name: true } } }
-        });
+        // Helper to check if a type should be included
+        const includeType = (type) => !voucherType || voucherType === 'ALL' || voucherType.toUpperCase() === type.toUpperCase();
 
-        // 4. Fetch Receipts (Money In)
-        const receipts = await prisma.receipt.findMany({
-            where: {
-                companyId: parseInt(companyId),
-                date: { gte: startDate, lte: endDate }
-            },
-            include: { customer: { select: { name: true } } }
-        });
+        const queries = [];
 
-        // 5. Fetch Payments (Money Out)
-        const payments = await prisma.payment.findMany({
-            where: {
-                companyId: parseInt(companyId),
-                date: { gte: startDate, lte: endDate }
-            },
-            include: { vendor: { select: { name: true } } }
-        });
-
-        // Consolidate
-        let dayBook = [];
-
-        // Invoices -> Credits (Sales)
-        invoices.forEach(inv => {
-            dayBook.push({
+        // 1. Invoices
+        if (includeType('SALES') || includeType('TAX_INVOICE')) {
+            queries.push(prisma.invoice.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(lId ? { customer: { ledgerId: lId } } : {})
+                },
+                include: { customer: true }
+            }).then(items => items.map(inv => ({
                 id: `INV-${inv.id}`,
                 date: inv.date,
                 voucherType: 'Sales',
                 voucherNo: inv.invoiceNumber,
-                ledger: inv.customer.name, // The party involved
-                description: 'Sales Invoice',
-                debit: 0,
-                credit: parseFloat(inv.totalAmount)
-            });
-        });
+                ledger: inv.customer?.name || 'Unknown',
+                description: inv.notes || 'Sales Invoice',
+                debit: inv.totalAmount,
+                credit: 0,
+                source: { type: 'SALES', id: inv.id, link: `/company/sales/invoice/view/${inv.id}` }
+            }))));
+        }
 
-        // POS -> Credits (Sales)
-        posInvoices.forEach(pos => {
-            dayBook.push({
+        // 2. POS Invoices
+        if (includeType('SALES') || includeType('POS_INVOICE')) {
+            queries.push(prisma.posinvoice.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    createdAt: dateFilter,
+                    ...(lId ? { customer: { ledgerId: lId } } : {})
+                },
+                include: { customer: true }
+            }).then(items => items.map(pos => ({
                 id: `POS-${pos.id}`,
                 date: pos.createdAt,
-                voucherType: 'Sales',
+                voucherType: 'POS Invoice',
                 voucherNo: pos.invoiceNumber,
-                ledger: pos.customer ? pos.customer.name : 'Walk-in Customer',
+                ledger: pos.customer?.name || 'Walk-in (Cash)',
                 description: 'POS Sale',
-                debit: 0,
-                credit: parseFloat(pos.totalAmount)
-            });
-        });
+                debit: pos.totalAmount,
+                credit: 0,
+                source: { type: 'POS_INVOICE', id: pos.id, link: `/company/pos/view/${pos.id}` }
+            }))));
+        }
 
-        // Bills -> Debits (Purchases)
-        bills.forEach(bill => {
-            dayBook.push({
+        // 3. Purchase Bills
+        if (includeType('PURCHASE')) {
+            queries.push(prisma.purchasebill.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(lId ? { vendor: { ledgerId: lId } } : {})
+                },
+                include: { vendor: true }
+            }).then(items => items.map(bill => ({
                 id: `BILL-${bill.id}`,
                 date: bill.date,
                 voucherType: 'Purchase',
                 voucherNo: bill.billNumber,
-                ledger: bill.vendor.name,
-                description: 'Purchase Bill',
-                debit: parseFloat(bill.totalAmount),
-                credit: 0
-            });
-        });
-
-        // Receipts -> Debits (Bank/Cash increases) -> Wait.
-        // Double Entry: 
-        // Receipt from Customer: Cash Dr, Customer Cr. 
-        // If we view from "Cash Book" perspective: Receipt = Debit (In).
-        // If we view from "Day Book" (Journal Register): It lists the voucher.
-        // Usually, Receipt Voucher implies Money Received.
-        // Let's list the Amount.
-        // Convention: Money In = Debit side of Cash Book. 
-        // But in Day Book list?
-        // Let's stick to the UI columns: Debit / Credit.
-        // Sales = Income = Credit.
-        // Purchase = Expense = Debit.
-        // Receipt = Asset (Cash) Increase = Debit.
-        // Payment = Asset (Cash) Decrease = Credit.
-
-        // Wait, the Mock Data shows:
-        // Sales: Deit 5000, Credit 0? (Cash Sales - General Store). 
-        // If "Cash Account" is the ledger, then Sales = Cash Debit. Correct.
-        // Purchase: Ledger "Office Supplies", Credit 1200? (Credit Purchase = Liability Cr). Correct.
-        // Payment: Ledger "Rent Expense", Debit 15000? (Expense Dr). Correct.
-        // Receipt: Ledger "Consulting Income", Credit 8000? (Income Cr). Correct.
-
-        // So the Mock Data is showing the effect on the NAMED LEDGER.
-        // Invoice: Ledger is Customer. Customer is Debited (Asset). -> Debit.
-        // POS: Ledger is Cash/Customer. Valid.
-        // Bill: Ledger is Vendor. Vendor is Credited (Liability). -> Credit.
-        // Payment: Ledger is Vendor. Vendor is Debited (Liability reduced). -> Debit.
-        // Receipt: Ledger is Customer. Customer is Credited (Asset reduced). -> Credit.
-
-        // Re-mapping based on "Party Ledger" perspective:
-
-        // Invoice (Credit Sales): Customer Account Dr.
-        invoices.forEach(inv => {
-            // Replacing previous push
-        });
-        // Reset dayBook to be empty and restart mapping
-        dayBook = [];
-
-        invoices.forEach(inv => {
-            dayBook.push({
-                id: `INV-${inv.id}`,
-                date: inv.date,
-                voucherType: 'Sales',
-                voucherNo: inv.invoiceNumber,
-                ledger: inv.customer.name,
-                description: 'Sales Invoice',
-                debit: parseFloat(inv.totalAmount), // Customer Dr
-                credit: 0
-            });
-        });
-
-        posInvoices.forEach(pos => {
-            // Cash Sales typically. Cash Dr.
-            // Or Customer Dr if named.
-            dayBook.push({
-                id: `POS-${pos.id}`,
-                date: pos.createdAt,
-                voucherType: 'Sales', // POS
-                voucherNo: pos.invoiceNumber,
-                ledger: pos.customer ? pos.customer.name : 'Walk-in (Cash)',
-                description: 'POS Sale',
-                debit: parseFloat(pos.totalAmount), // Cash/Customer Dr
-                credit: 0
-            });
-        });
-
-        bills.forEach(bill => {
-            // Credit Purchase: Vendor Cr
-            dayBook.push({
-                id: `BILL-${bill.id}`,
-                date: bill.date,
-                voucherType: 'Purchase',
-                voucherNo: bill.billNumber,
-                ledger: bill.vendor.name,
-                description: 'Purchase Bill',
+                ledger: bill.vendor?.name || 'Unknown',
+                description: bill.notes || 'Purchase Bill',
                 debit: 0,
-                credit: parseFloat(bill.totalAmount) // Vendor Cr
-            });
-        });
+                credit: bill.totalAmount,
+                source: { type: 'PURCHASE', id: bill.id, link: `/company/purchase/bill/view/${bill.id}` }
+            }))));
+        }
 
-        receipts.forEach(rec => {
-            // Money In from Customer: Customer Cr
-            dayBook.push({
+        // 4. Receipts
+        if (includeType('RECEIPT')) {
+            queries.push(prisma.receipt.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(lId ? { OR: [{ customer: { ledgerId: lId } }, { ledgerId: lId }] } : {})
+                },
+                include: { customer: true, ledger: true }
+            }).then(items => items.map(rec => ({
                 id: `REC-${rec.id}`,
                 date: rec.date,
                 voucherType: 'Receipt',
                 voucherNo: rec.receiptNumber,
-                ledger: rec.customer.name,
+                ledger: rec.customer?.name || rec.ledger?.name || 'Unknown',
                 description: 'Payment Received',
                 debit: 0,
-                credit: parseFloat(rec.amount) // Customer Cr
-            });
-        });
+                credit: rec.amount,
+                source: { type: 'RECEIPT', id: rec.id, link: `/company/payment/receipt/view/${rec.id}` }
+            }))));
+        }
 
-        payments.forEach(pay => {
-            // Money Out to Vendor: Vendor Dr
-            dayBook.push({
+        // 5. Payments
+        if (includeType('PAYMENT')) {
+            queries.push(prisma.payment.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(lId ? { OR: [{ vendor: { ledgerId: lId } }, { ledgerId: lId }] } : {})
+                },
+                include: { vendor: true, ledger: true }
+            }).then(items => items.map(pay => ({
                 id: `PAY-${pay.id}`,
                 date: pay.date,
                 voucherType: 'Payment',
                 voucherNo: pay.paymentNumber,
-                ledger: pay.vendor.name,
+                ledger: pay.vendor?.name || pay.ledger?.name || 'Unknown',
                 description: 'Payment Made',
-                debit: parseFloat(pay.amount), // Vendor Dr
-                credit: 0
-            });
-        });
+                debit: pay.amount,
+                credit: 0,
+                source: { type: 'PAYMENT', id: pay.id, link: `/company/payment/made/view/${pay.id}` }
+            }))));
+        }
 
-        // Sort by Date equivalent (using ID or just keeping as is, ideally sort by created time if available, but 'date' is just YYYY-MM-DD for some)
-        // Let's sort roughly.
-        dayBook.sort((a, b) => new Date(a.date) - new Date(b.date));
+        // 6. Journal Entries
+        if (includeType('JOURNAL')) {
+            queries.push(prisma.journalentry.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(lId ? { transaction: { some: { OR: [{ debitLedgerId: lId }, { creditLedgerId: lId }] } } } : {})
+                },
+                include: { transaction: { include: { ledger_transaction_debitLedgerIdToledger: true, ledger_transaction_creditLedgerIdToledger: true } } }
+            }).then(items => items.map(je => ({
+                id: `JE-${je.id}`,
+                date: je.date,
+                voucherType: 'Journal',
+                voucherNo: je.voucherNumber || je.journalNumber || '-',
+                ledger: 'Journal Entry',
+                description: je.narration || 'Journal Voucher',
+                debit: je.transaction.reduce((sum, t) => sum + (t.debitLedgerId ? t.amount : 0), 0),
+                credit: 0, // In Day Book we usually show total magnitude or DR/CR split
+                source: { type: 'JOURNAL', id: je.id, link: `/company/journal/view/${je.id}` }
+            }))));
+        }
+
+        // 7. Vouchers (Expense, Income, Contra)
+        if (includeType('EXPENSE') || includeType('INCOME') || includeType('CONTRA')) {
+            queries.push(prisma.voucher.findMany({
+                where: {
+                    companyId: companyIdInt,
+                    date: dateFilter,
+                    ...(voucherType && voucherType !== 'ALL' ? { voucherType: voucherType.toUpperCase() } : {}),
+                    ...(lId ? { OR: [{ paidFromLedgerId: lId }, { paidToLedgerId: lId }, { vendor: { ledgerId: lId } }, { customer: { ledgerId: lId } }] } : {})
+                },
+                include: { vendor: true, customer: true, paidFromLedger: true, paidToLedger: true }
+            }).then(items => items.map(v => ({
+                id: `VCH-${v.id}`,
+                date: v.date,
+                voucherType: v.voucherType,
+                voucherNo: v.voucherNumber,
+                ledger: v.vendor?.name || v.customer?.name || v.paidToLedger?.name || v.paidFromLedger?.name || 'Unknown',
+                description: v.notes || `${v.voucherType} Voucher`,
+                debit: v.voucherType === 'EXPENSE' ? v.totalAmount : (v.voucherType === 'CONTRA' ? v.totalAmount : 0),
+                credit: v.voucherType === 'INCOME' ? v.totalAmount : 0,
+                source: { type: v.voucherType, id: v.id, link: `/company/vouchers/view/${v.id}` }
+            }))));
+        }
+
+        const results = await Promise.all(queries);
+        const dayBook = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
 
         res.status(200).json({ success: true, data: dayBook });
 
@@ -1237,8 +1283,24 @@ const getTrialBalance = async (req, res) => {
                 }
             });
 
-            const totalDebit = parseFloat(debits._sum.amount || 0);
-            const totalCredit = parseFloat(credits._sum.amount || 0);
+            const totalDebitTransactions = parseFloat(debits._sum.amount || 0);
+            const totalCreditTransactions = parseFloat(credits._sum.amount || 0);
+
+            let openingDebit = 0;
+            let openingCredit = 0;
+            const openingBalance = parseFloat(ledger.openingBalance || 0);
+            const groupType = ledger.accountgroup?.type;
+
+            // Assets and Expenses have a natural Debit balance
+            if (groupType === 'ASSETS' || groupType === 'EXPENSES') {
+                openingDebit = openingBalance;
+            } else {
+                // Liabilities, Income, and Equity have a natural Credit balance
+                openingCredit = openingBalance;
+            }
+
+            const totalDebit = totalDebitTransactions + openingDebit;
+            const totalCredit = totalCreditTransactions + openingCredit;
 
             // Determine Net Balance
             let netDebit = 0;
@@ -1265,6 +1327,29 @@ const getTrialBalance = async (req, res) => {
 
         // Sort by Name or Type
         trialBalance.sort((a, b) => a.name.localeCompare(b.name));
+
+        // 5. Dynamic Inventory for TB
+        const currentInventoryValue = await calculateInventoryValue(companyId);
+        const hasInventory = trialBalance.some(b => b.name.toLowerCase().includes('inventory'));
+        
+        if (!hasInventory && currentInventoryValue > 0) {
+            trialBalance.push({
+                id: 999999, // Virtual ID
+                name: 'Inventory Asset (Closing)',
+                type: 'Current Assets',
+                debit: currentInventoryValue,
+                credit: 0
+            });
+            // To balance TB, we'd need an offsetting entry, but typically TB shows ledger balances.
+            // If inventory isn't in a ledger, TB will be unbalanced by this amount unless we add a virtual Equity.
+            trialBalance.push({
+                id: 999998,
+                name: 'Closing Stock (P&L)',
+                type: 'Equity',
+                debit: 0,
+                credit: currentInventoryValue
+            });
+        }
 
         res.status(200).json({ success: true, data: trialBalance });
 

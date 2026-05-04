@@ -127,4 +127,86 @@ const login = async (req, res) => {
     }
 };
 
-module.exports = { register, login };
+const impersonate = async (req, res) => {
+    try {
+        const { companyId } = req.body;
+        
+        if (!companyId) {
+            return res.status(400).json({ message: 'Company ID is required' });
+        }
+
+        // Find the admin user (role='COMPANY') for this company
+        const user = await prisma.user.findFirst({
+            where: { 
+                companyId: parseInt(companyId),
+                role: 'COMPANY'
+            },
+            include: {
+                company: {
+                    include: {
+                        plan: true
+                    }
+                }
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: 'No admin user found for this company' });
+        }
+
+        let permissions = [];
+        let planModules = [];
+
+        try {
+            const roleData = await prisma.role.findFirst({
+                where: { 
+                    companyId: user.companyId,
+                    name: 'COMPANY'
+                }
+            });
+
+            if (roleData && roleData.permissions) {
+                permissions = JSON.parse(roleData.permissions);
+            }
+
+            if (user.company && user.company.plan && user.company.plan.modules) {
+                planModules = JSON.parse(user.company.plan.modules);
+            }
+        } catch (e) {
+            console.error("Perm fetch error in impersonate:", e);
+        }
+
+        const token = jwt.sign(
+            { 
+                userId: user.id, 
+                role: user.role, 
+                companyId: user.companyId,
+                permissions: permissions,
+                planModules: planModules,
+                isImpersonated: true
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: '1d' }
+        );
+
+        res.json({
+            message: 'Impersonation successful',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                companyId: user.companyId,
+                company: user.company,
+                permissions: permissions,
+                planModules: planModules
+            },
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+module.exports = { register, login, impersonate };

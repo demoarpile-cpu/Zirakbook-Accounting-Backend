@@ -138,7 +138,16 @@ const getCompanies = async (req, res) => {
                 plan: true
             }
         });
-        res.json(companies);
+        const companiesWithStorage = companies.map(company => {
+            if (company.inventoryConfig) {
+                try {
+                    const config = JSON.parse(company.inventoryConfig);
+                    company.storageCapacity = config.storageCapacity;
+                } catch (e) {}
+            }
+            return company;
+        });
+        res.json(companiesWithStorage);
     } catch (error) {
         console.error('Get Companies Error:', error);
         res.status(500).json({ error: error.message });
@@ -154,7 +163,12 @@ const getCompanyById = async (req, res) => {
                 plan: true
             }
         });
-        if (!company) return res.status(404).json({ message: 'Company not found' });
+        if (company && company.inventoryConfig) {
+            try {
+                const config = JSON.parse(company.inventoryConfig);
+                company.storageCapacity = config.storageCapacity;
+            } catch (e) {}
+        }
         res.json(company);
     } catch (error) {
         console.error('Get Company By ID Error:', error);
@@ -177,8 +191,30 @@ const updateCompany = async (req, res) => {
             ifsc,
             terms,
             notes,
-            inventoryConfig
+            inventoryConfig,
+            storageCapacity
         } = req.body;
+
+        // Fetch current company to get existing inventoryConfig
+        const currentCompany = await prisma.company.findUnique({
+            where: { id: parseInt(req.params.id) }
+        });
+
+        let finalInventoryConfig = currentCompany.inventoryConfig || '{}';
+        try {
+            let configObj = typeof finalInventoryConfig === 'string' ? JSON.parse(finalInventoryConfig) : finalInventoryConfig;
+            if (storageCapacity !== undefined) {
+                configObj.storageCapacity = storageCapacity;
+            }
+            if (inventoryConfig !== undefined) {
+                // Merge other inventory config if provided
+                const newConfig = typeof inventoryConfig === 'string' ? JSON.parse(inventoryConfig) : inventoryConfig;
+                configObj = { ...configObj, ...newConfig };
+            }
+            finalInventoryConfig = JSON.stringify(configObj);
+        } catch (e) {
+            console.error('Error parsing inventoryConfig:', e);
+        }
 
         const updateData = {
             name,
@@ -204,29 +240,8 @@ const updateCompany = async (req, res) => {
             ifsc,
             terms,
             notes,
-            inventoryConfig: inventoryConfig ? (typeof inventoryConfig === 'object' ? JSON.stringify(inventoryConfig) : inventoryConfig) : undefined
+            inventoryConfig: finalInventoryConfig
         };
-
-        if (req.files) {
-            if (isCloudinaryConfigured) {
-                if (req.files['logo']) {
-                    updateData.logo = req.files['logo'][0].path;
-                    console.log('✅ Company logo uploaded:', updateData.logo);
-                }
-                if (req.files['invoiceLogo']) {
-                    updateData.invoiceLogo = req.files['invoiceLogo'][0].path;
-                    console.log('✅ Invoice logo uploaded:', updateData.invoiceLogo);
-                }
-            } else {
-                console.warn('⚠️ Files received but Cloudinary not configured. Logos not updated.');
-            }
-        } else if (req.file) {
-            // Fallback if single file upload is still used somewhere or mostly for logo
-            if (isCloudinaryConfigured) {
-                updateData.logo = req.file.path;
-                console.log('✅ Company logo uploaded (single):', updateData.logo);
-            }
-        }
 
         console.log('💾 Updating company with data:', updateData);
 
@@ -235,6 +250,14 @@ const updateCompany = async (req, res) => {
             data: updateData,
             include: { plan: true }
         });
+
+        // Add storageCapacity to the response object for frontend
+        if (company.inventoryConfig) {
+            try {
+                const config = JSON.parse(company.inventoryConfig);
+                company.storageCapacity = config.storageCapacity;
+            } catch (e) {}
+        }
 
         console.log('✅ Company updated successfully!');
         res.json(company);

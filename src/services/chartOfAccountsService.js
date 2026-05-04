@@ -423,16 +423,32 @@ const getLedgerTransactions = async (ledgerId, companyId) => {
                 ledger_transaction_debitLedgerIdToledger: true,
                 ledger_transaction_creditLedgerIdToledger: true,
                 invoice: {
-                    include: { customer: true }
+                    include: {
+                        customer: {
+                            select: { id: true, name: true, nameArabic: true, phone: true, email: true }
+                        }
+                    }
                 },
                 purchasebill: {
-                    include: { vendor: true }
+                    include: {
+                        vendor: {
+                            select: { id: true, name: true, nameArabic: true, phone: true, email: true }
+                        }
+                    }
                 },
                 receipt: {
-                    include: { customer: true }
+                    include: {
+                        customer: {
+                            select: { id: true, name: true, nameArabic: true, phone: true, email: true }
+                        }
+                    }
                 },
                 payment: {
-                    include: { vendor: true }
+                    include: {
+                        vendor: {
+                            select: { id: true, name: true, nameArabic: true, phone: true, email: true }
+                        }
+                    }
                 }
             },
             orderBy: { date: 'desc' }
