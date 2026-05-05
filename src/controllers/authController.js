@@ -58,6 +58,21 @@ const login = async (req, res) => {
             return res.status(403).json({ message: 'Your account has been disabled. Please contact your administrator.' });
         }
 
+        // Check for company plan expiration
+        if (user.role !== 'SUPERADMIN' && user.company && user.company.endDate) {
+            const expiryDate = new Date(user.company.endDate);
+            const today = new Date();
+            // Set today to start of day for accurate comparison if endDate is just a date
+            today.setHours(0, 0, 0, 0);
+            
+            if (expiryDate < today) {
+                return res.status(403).json({ 
+                    message: 'Your company plan has expired. Please contact super admin to renew your plan.',
+                    isExpired: true 
+                });
+            }
+        }
+
         let permissions = [];
         let planModules = [];
 
@@ -152,6 +167,20 @@ const impersonate = async (req, res) => {
 
         if (!user) {
             return res.status(404).json({ message: 'No admin user found for this company' });
+        }
+
+        // Check for company plan expiration during impersonation
+        if (user.company && user.company.endDate) {
+            const expiryDate = new Date(user.company.endDate);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            
+            if (expiryDate < today) {
+                return res.status(403).json({ 
+                    message: 'Cannot login: This company plan has expired.',
+                    isExpired: true 
+                });
+            }
         }
 
         let permissions = [];
