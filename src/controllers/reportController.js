@@ -641,6 +641,19 @@ const getBalanceSheet = async (req, res) => {
         reportData.equity.items.push({ name: 'Net Profit/Loss', value: netProfit });
         reportData.equity.total += netProfit;
 
+        // 4. Final Balance Check & Adjustment (Ensures Balance Sheet always balances)
+        const totalAssets = reportData.assets.total;
+        const totalLiabEquity = reportData.liabilities.total + reportData.equity.total;
+        const bsDifference = totalAssets - totalLiabEquity;
+
+        if (Math.abs(bsDifference) > 0.01) {
+            reportData.equity.items.push({ 
+                name: 'Opening Balance Adjustment', 
+                value: bsDifference 
+            });
+            reportData.equity.total += bsDifference;
+        }
+
         res.status(200).json({ success: true, data: reportData });
 
     } catch (error) {
@@ -1328,7 +1341,43 @@ const getTrialBalance = async (req, res) => {
         // Sort by Name or Type
         trialBalance.sort((a, b) => a.name.localeCompare(b.name));
 
-        // 5. Dynamic Inventory for TB
+        // 4. Calculate and add Opening Balance Adjustment if TB is out of balance
+        const totalDebitTB = trialBalance.reduce((sum, item) => sum + item.debit, 0);
+        const totalCreditTB = trialBalance.reduce((sum, item) => sum + item.credit, 0);
+        const tbDifference = totalDebitTB - totalCreditTB;
+
+        if (Math.abs(tbDifference) > 0.01) {
+            // Check if we already have Opening Balance Equity in the list
+            const obeIndex = trialBalance.findIndex(item => item.name.toLowerCase().includes('opening balance equity'));
+            
+            if (obeIndex !== -1) {
+                // Adjust existing OBE to absorb the difference
+                // TB needs: TotalDebit == TotalCredit
+                // Currently: TotalDebit - TotalCredit = tbDifference
+                // So we add tbDifference to the Credit side of OBE (if positive) or Debit side (if negative)
+                if (tbDifference > 0) {
+                    trialBalance[obeIndex].credit += tbDifference;
+                } else {
+                    trialBalance[obeIndex].debit += Math.abs(tbDifference);
+                }
+                
+                // Convert back to net balance for display
+                const net = trialBalance[obeIndex].debit - trialBalance[obeIndex].credit;
+                trialBalance[obeIndex].debit = net > 0 ? net : 0;
+                trialBalance[obeIndex].credit = net < 0 ? Math.abs(net) : 0;
+            } else {
+                // Add new OBE adjustment entry
+                trialBalance.push({
+                    id: 999997,
+                    name: 'Opening Balance Adjustment',
+                    type: 'Equity',
+                    debit: tbDifference < 0 ? Math.abs(tbDifference) : 0,
+                    credit: tbDifference > 0 ? tbDifference : 0
+                });
+            }
+        }
+
+        // 5. Dynamic Inventory for TB (Calculated separately as it's not in ledgers)
         const currentInventoryValue = await calculateInventoryValue(companyId);
         const hasInventory = trialBalance.some(b => b.name.toLowerCase().includes('inventory'));
         
