@@ -738,7 +738,7 @@ const getProfitLoss = async (req, res) => {
             const endDate = new Date(`${targetYear}-12-31`);
             endDate.setHours(23, 59, 59, 999);
 
-            // Fetch Ledgers
+            // Fetch Ledgers with Group and Sub-Group info
             const ledgers = await prisma.ledger.findMany({
                 where: {
                     companyId: parseInt(companyId),
@@ -746,7 +746,10 @@ const getProfitLoss = async (req, res) => {
                         type: { in: ['INCOME', 'EXPENSES'] }
                     }
                 },
-                include: { accountgroup: true }
+                include: { 
+                    accountgroup: true,
+                    accountsubgroup: true
+                }
             });
 
             // Fetch Transactions for these ledgers in the year
@@ -764,8 +767,25 @@ const getProfitLoss = async (req, res) => {
             let totalIncome = 0;
             let totalExpense = 0;
             const monthlyData = Array(12).fill(0).map(() => ({ income: 0, expense: 0 }));
-            const incomeCategories = {};
-            const expenseCategories = {};
+            
+            // Standard P&L Categories
+            const statement = {
+                revenue: { items: [], total: 0 },
+                cogs: { items: [], total: 0 },
+                operatingExpenses: { items: [], total: 0 },
+                otherIncome: { items: [], total: 0 },
+                otherExpense: { items: [], total: 0 }
+            };
+
+            const ledgerValues = {}; // To store net value per ledger
+            ledgers.forEach(l => {
+                const openBal = parseFloat(l.openingBalance || 0);
+                ledgerValues[l.id] = openBal;
+                
+                // Income and Expenses opening balances contribute to the net profit
+                if (l.accountgroup.type === 'INCOME') totalIncome += openBal;
+                if (l.accountgroup.type === 'EXPENSES') totalExpense += openBal;
+            });
 
             transactions.forEach(txn => {
                 const month = new Date(txn.date).getMonth(); // 0-11
@@ -788,21 +808,11 @@ const getProfitLoss = async (req, res) => {
                     if (debitLedger.accountgroup.type === 'EXPENSES') {
                         totalExpense += amount;
                         monthlyData[month].expense += amount;
-
-                        const ledgerId = debitLedger.id;
-                        if (!expenseCategories[ledgerId]) {
-                            expenseCategories[ledgerId] = { id: ledgerId, name: debitLedger.name, value: 0 };
-                        }
-                        expenseCategories[ledgerId].value += amount;
+                        ledgerValues[debitLedger.id] += amount;
                     } else if (debitLedger.accountgroup.type === 'INCOME') {
                         totalIncome -= amount;
                         monthlyData[month].income -= amount;
-
-                        const ledgerId = debitLedger.id;
-                        if (!incomeCategories[ledgerId]) {
-                            incomeCategories[ledgerId] = { id: ledgerId, name: debitLedger.name, value: 0 };
-                        }
-                        incomeCategories[ledgerId].value -= amount;
+                        ledgerValues[debitLedger.id] -= amount;
                     }
                 }
 
@@ -811,21 +821,46 @@ const getProfitLoss = async (req, res) => {
                     if (creditLedger.accountgroup.type === 'INCOME') {
                         totalIncome += amount;
                         monthlyData[month].income += amount;
-
-                        const ledgerId = creditLedger.id;
-                        if (!incomeCategories[ledgerId]) {
-                            incomeCategories[ledgerId] = { id: ledgerId, name: creditLedger.name, value: 0 };
-                        }
-                        incomeCategories[ledgerId].value += amount;
+                        ledgerValues[creditLedger.id] += amount;
                     } else if (creditLedger.accountgroup.type === 'EXPENSES') {
                         totalExpense -= amount;
                         monthlyData[month].expense -= amount;
+                        ledgerValues[creditLedger.id] -= amount;
+                    }
+                }
+            });
 
-                        const ledgerId = creditLedger.id;
-                        if (!expenseCategories[ledgerId]) {
-                            expenseCategories[ledgerId] = { id: ledgerId, name: creditLedger.name, value: 0 };
-                        }
-                        expenseCategories[ledgerId].value -= amount;
+            // Populate Statement Structure
+            ledgers.forEach(ledger => {
+                const val = ledgerValues[ledger.id];
+                if (Math.abs(val) < 0.01) return;
+
+                const item = { id: ledger.id, name: ledger.name, value: val };
+                const groupType = ledger.accountgroup.type;
+                const subGroupName = ledger.accountsubgroup?.name?.toLowerCase() || '';
+                const ledgerName = ledger.name.toLowerCase();
+
+                if (groupType === 'INCOME') {
+                    if (subGroupName.includes('other')) {
+                        statement.otherIncome.items.push(item);
+                        statement.otherIncome.total += val;
+                    } else {
+                        statement.revenue.items.push(item);
+                        statement.revenue.total += val;
+                    }
+                } else if (groupType === 'EXPENSES') {
+                    if (subGroupName.includes('direct') || 
+                        ledgerName.includes('cost of goods sold') || 
+                        ledgerName.includes('cogs') || 
+                        ledgerName.includes('purchases')) {
+                        statement.cogs.items.push(item);
+                        statement.cogs.total += val;
+                    } else if (subGroupName.includes('other')) {
+                        statement.otherExpense.items.push(item);
+                        statement.otherExpense.total += val;
+                    } else {
+                        statement.operatingExpenses.items.push(item);
+                        statement.operatingExpenses.total += val;
                     }
                 }
             });
@@ -835,8 +870,7 @@ const getProfitLoss = async (req, res) => {
                 totalExpense,
                 netProfit: totalIncome - totalExpense,
                 monthlyData,
-                incomeCategories,
-                expenseCategories
+                statement
             };
         };
 
@@ -868,16 +902,23 @@ const getProfitLoss = async (req, res) => {
             expense: currentData.monthlyData[i].expense
         }));
 
-        // Format Categories using Object.values since they are now objects
-        const formatCats = (cats) => Object.values(cats);
+        // Official Statement Totals
+        const grossProfit = currentData.statement.revenue.total - currentData.statement.cogs.total;
+        const operatingIncome = grossProfit - currentData.statement.operatingExpenses.total;
+        const netOther = currentData.statement.otherIncome.total - currentData.statement.otherExpense.total;
 
         res.status(200).json({
             success: true,
             data: {
                 summary,
                 chartData,
-                incomeCategories: formatCats(currentData.incomeCategories),
-                expenseCategories: formatCats(currentData.expenseCategories)
+                statement: currentData.statement,
+                calculations: {
+                    grossProfit,
+                    operatingIncome,
+                    netOther,
+                    netProfit: currentData.netProfit
+                }
             }
         });
 
