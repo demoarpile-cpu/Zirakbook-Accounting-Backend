@@ -21,52 +21,9 @@ const createReturn = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Customer ledger not found. Please ensure customer has a ledger configured.' });
         }
 
-        // Find/Create Sales Return Ledger
-        let returnLedger = await prisma.ledger.findFirst({
-            where: { companyId: parseInt(companyId), name: { contains: 'Return' }, accountgroup: { type: 'EXPENSES' } } // Usually Sales Return is contra-revenue (EXPENSE or negative INCOME)
-        });
-
-        if (!returnLedger) {
-            // Check for INCOME type too if they group it there
-            returnLedger = await prisma.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: { contains: 'Return' }, accountgroup: { type: 'INCOME' } }
-            });
-        }
-
-        // Auto-create Sales Return Ledger if not found
-        if (!returnLedger) {
-            // Find an EXPENSES group (Sales Return is typically a contra-revenue, treated as expense)
-            let expenseGroup = await prisma.accountgroup.findFirst({
-                where: { companyId: parseInt(companyId), type: 'EXPENSES' }
-            });
-
-            if (!expenseGroup) {
-                // Create Direct Expenses group if no expense group exists
-                expenseGroup = await prisma.accountgroup.create({
-                    data: {
-                        name: 'Direct Expenses',
-                        type: 'EXPENSES',
-                        companyId: parseInt(companyId)
-                    }
-                });
-            }
-
-            // Create the Sales Return ledger
-            returnLedger = await prisma.ledger.create({
-                data: {
-                    name: 'Sales Return',
-                    groupId: expenseGroup.id,
-                    companyId: parseInt(companyId),
-                    description: 'Auto-created Sales Return Ledger',
-                    openingBalance: 0,
-                    currentBalance: 0
-                }
-            });
-        }
-
         let totalAmount = 0;
         const returnItems = items.map(item => {
-            const amount = parseFloat(item.quantity) * parseFloat(item.rate);
+            const amount = (parseFloat(item.quantity) || 0) * (parseFloat(item.rate) || 0);
             totalAmount += amount;
             return {
                 productId: parseInt(item.productId),
@@ -78,6 +35,30 @@ const createReturn = async (req, res) => {
         });
 
         const result = await prisma.$transaction(async (tx) => {
+            // Helper to resolve ledgers (Auto-create if missing)
+            const resolveLedger = async (txOrPrisma, namePattern, type) => {
+                let ledger = await txOrPrisma.ledger.findFirst({
+                    where: { companyId: parseInt(companyId), name: { contains: namePattern } }
+                });
+                if (!ledger) {
+                    const group = await txOrPrisma.accountgroup.findFirst({ where: { companyId: parseInt(companyId), type: type } });
+                    if (group) {
+                        ledger = await txOrPrisma.ledger.create({
+                            data: {
+                                name: namePattern,
+                                groupId: group.id,
+                                companyId: parseInt(companyId),
+                                isControlAccount: true
+                            }
+                        });
+                    }
+                }
+                return ledger;
+            };
+
+            const returnLedger = await resolveLedger(tx, 'Sales Return', 'EXPENSES') || await resolveLedger(tx, 'Sales Return', 'INCOME');
+            if (!returnLedger) throw new Error('Sales Return ledger could not be resolved or created');
+
             // Generate Auto Voucher No (inside transaction for consistency)
             const getAutoVoucherNo = async (companyId) => {
                 const count = await tx.transaction.count({
@@ -189,11 +170,11 @@ const createReturn = async (req, res) => {
             }
 
             if (totalReturnCOGS > 0) {
-                const inventoryLedger = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'Inventory' }, accountgroup: { type: 'ASSETS' } } });
-                const cogsLedger = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'COGS' }, accountgroup: { type: 'EXPENSES' } } }) ||
-                                   await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'Cost of Goods Sold' }, accountgroup: { type: 'EXPENSES' } } });
+                const inventoryLedger = await resolveLedger(tx, 'Inventory Asset', 'ASSETS');
+                const cogsLedger = await resolveLedger(tx, 'Cost of Goods Sold', 'EXPENSES') || await resolveLedger(tx, 'COGS', 'EXPENSES');
 
                 if (inventoryLedger && cogsLedger) {
+
                     await tx.transaction.create({
                         data: {
                             date: new Date(date),

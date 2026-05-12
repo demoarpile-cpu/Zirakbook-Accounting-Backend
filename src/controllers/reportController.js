@@ -139,6 +139,163 @@ const getSalesReport = async (req, res) => {
     }
 };
 
+const getSalesByItemReport = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const { startDate, endDate } = req.query;
+
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
+
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = {
+                gte: new Date(startDate),
+                lte: new Date(endDate)
+            };
+        }
+
+        const invoiceItems = await prisma.invoiceitem.findMany({
+            where: {
+                invoice: { companyId: parseInt(companyId), date: dateFilter }
+            },
+            include: {
+                product: { include: { category: true } },
+                invoice: { select: { date: true, invoiceNumber: true } }
+            }
+        });
+
+        const grouped = invoiceItems.reduce((acc, item) => {
+            const productId = item.productId || 'service-' + (item.serviceId || 'unknown');
+            const productName = item.product?.name || item.description || 'Unknown';
+            
+            if (!acc[productId]) {
+                acc[productId] = {
+                    productId,
+                    productName,
+                    sku: item.product?.sku || '-',
+                    category: item.product?.category?.name || 'Uncategorized',
+                    totalQty: 0,
+                    totalAmount: 0,
+                    invoiceCount: 0,
+                    invoiceIds: new Set()
+                };
+            }
+            acc[productId].invoiceIds.add(item.invoiceId);
+            acc[productId].totalQty += item.quantity;
+            acc[productId].totalAmount += item.amount;
+            return acc;
+        }, {});
+
+        const result = Object.values(grouped).map(item => ({
+            ...item,
+            invoiceCount: item.invoiceIds.size,
+            avgRate: item.totalQty > 0 ? (item.totalAmount / item.totalQty).toFixed(2) : 0
+        }));
+
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getSalesByCustomerReport = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const { startDate, endDate } = req.query;
+
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
+
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = {
+                gte: new Date(startDate),
+                lte: new Date(endDate)
+            };
+        }
+
+        const invoices = await prisma.invoice.findMany({
+            where: { companyId: parseInt(companyId), date: dateFilter },
+            include: { customer: true }
+        });
+
+        const posInvoices = await prisma.posinvoice.findMany({
+            where: { companyId: parseInt(companyId), date: dateFilter },
+            include: { customer: true }
+        });
+
+        const allInvoices = [...invoices, ...posInvoices];
+
+        const grouped = allInvoices.reduce((acc, inv) => {
+            const customerId = inv.customerId || 'walk-in';
+            const customerName = inv.customer?.name || 'Walk-in Customer';
+            
+            if (!acc[customerId]) {
+                acc[customerId] = {
+                    customerId,
+                    customerName,
+                    totalInvoices: 0,
+                    totalSales: 0,
+                    totalPaid: 0,
+                    totalPending: 0
+                };
+            }
+            acc[customerId].totalInvoices += 1;
+            acc[customerId].totalSales += inv.totalAmount;
+            acc[customerId].totalPaid += inv.paidAmount || 0;
+            acc[customerId].totalPending += inv.balanceAmount || 0;
+            return acc;
+        }, {});
+
+        res.status(200).json({ success: true, data: Object.values(grouped) });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getSalesBySalesmanReport = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const { startDate, endDate } = req.query;
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
+
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = { gte: new Date(startDate), lte: new Date(endDate) };
+        }
+
+        const invoices = await prisma.invoice.findMany({
+            where: { companyId: parseInt(companyId), date: dateFilter }
+        });
+
+        const posInvoices = await prisma.posinvoice.findMany({
+            where: { companyId: parseInt(companyId), date: dateFilter }
+        });
+
+        const users = await prisma.user.findMany({
+            where: { companyId: parseInt(companyId) },
+            select: { id: true, name: true }
+        });
+        const userMap = users.reduce((acc, u) => ({ ...acc, [u.id]: u.name }), {});
+
+        const allInvoices = [...invoices, ...posInvoices];
+        const grouped = allInvoices.reduce((acc, inv) => {
+            const salesman = userMap[inv.createdBy] || 'Administrator';
+            if (!acc[salesman]) {
+                acc[salesman] = { salesman, totalInvoices: 0, totalSales: 0, totalPaid: 0, totalPending: 0 };
+            }
+            acc[salesman].totalInvoices += 1;
+            acc[salesman].totalSales += inv.totalAmount;
+            acc[salesman].totalPaid += inv.paidAmount || 0;
+            acc[salesman].totalPending += inv.balanceAmount || 0;
+            return acc;
+        }, {});
+
+        res.status(200).json({ success: true, data: Object.values(grouped) });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 const getPurchaseReport = async (req, res) => {
     try {
         const companyId = req.user?.companyId || req.query.companyId;
@@ -213,6 +370,112 @@ const getPurchaseReport = async (req, res) => {
     } catch (error) {
         console.error('Error fetching purchase report:', error);
         res.status(500).json({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+const getPurchaseByItemReport = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const { startDate, endDate } = req.query;
+
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
+
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = {
+                gte: new Date(startDate),
+                lte: new Date(endDate)
+            };
+        }
+
+        const billItems = await prisma.purchasebillitem.findMany({
+            where: {
+                purchasebill: { companyId: parseInt(companyId), date: dateFilter }
+            },
+            include: {
+                product: { include: { category: true } },
+                purchasebill: { select: { date: true, billNumber: true } }
+            }
+        });
+
+        const grouped = billItems.reduce((acc, item) => {
+            const productId = item.productId || 'unknown';
+            const productName = item.product?.name || item.description || 'Unknown';
+            
+            if (!acc[productId]) {
+                acc[productId] = {
+                    productId,
+                    productName,
+                    sku: item.product?.sku || '-',
+                    category: item.product?.category?.name || 'Uncategorized',
+                    totalQty: 0,
+                    totalAmount: 0,
+                    billCount: 0,
+                    billIds: new Set()
+                };
+            }
+            acc[productId].billIds.add(item.purchaseBillId);
+            acc[productId].totalQty += item.quantity;
+            acc[productId].totalAmount += item.amount;
+            return acc;
+        }, {});
+
+        const result = Object.values(grouped).map(item => ({
+            ...item,
+            billCount: item.billIds.size,
+            avgRate: item.totalQty > 0 ? (item.totalAmount / item.totalQty).toFixed(2) : 0
+        }));
+
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+const getPurchaseByVendorReport = async (req, res) => {
+    try {
+        const companyId = req.user?.companyId || req.query.companyId;
+        const { startDate, endDate } = req.query;
+
+        if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
+
+        let dateFilter = {};
+        if (startDate && endDate) {
+            dateFilter = {
+                gte: new Date(startDate),
+                lte: new Date(endDate)
+            };
+        }
+
+        const bills = await prisma.purchasebill.findMany({
+            where: { companyId: parseInt(companyId), date: dateFilter },
+            include: { vendor: true }
+        });
+
+        const grouped = bills.reduce((acc, bill) => {
+            const vendorId = bill.vendorId || 'unknown';
+            const vendorName = bill.vendor?.name || 'Unknown Vendor';
+            
+            if (!acc[vendorId]) {
+                acc[vendorId] = {
+                    vendorId,
+                    vendorName,
+                    totalBills: 0,
+                    totalPurchases: 0,
+                    totalPaid: 0,
+                    totalPending: 0
+                };
+            }
+            acc[vendorId].totalBills += 1;
+            acc[vendorId].totalPurchases += bill.totalAmount;
+            acc[vendorId].totalPaid += (bill.totalAmount - bill.balanceAmount);
+            acc[vendorId].totalPending += bill.balanceAmount;
+            return acc;
+        }, {});
+
+        res.status(200).json({ success: true, data: Object.values(grouped) });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };
 
@@ -627,12 +890,12 @@ const getBalanceSheet = async (req, res) => {
 
         // Find if any ledger already represents Inventory in Assets
         const hasInventoryLedger = reportData.assets.current.some(a => a.name.toLowerCase().includes('inventory'));
-        
+
         if (!hasInventoryLedger && currentInventoryValue > 0) {
-            reportData.assets.current.push({ 
-                name: 'Closing Stock (Inventory)', 
+            reportData.assets.current.push({
+                name: 'Closing Stock (Inventory)',
                 value: currentInventoryValue,
-                isClosingStock: true 
+                isClosingStock: true
             });
             reportData.assets.total += currentInventoryValue;
         }
@@ -644,10 +907,10 @@ const getBalanceSheet = async (req, res) => {
         reportData.netProfit = finalNetProfit;
 
         // Add Net Profit to Equity
-        reportData.equity.items.push({ 
-            name: 'Net Profit / (Loss) for Period', 
+        reportData.equity.items.push({
+            name: 'Net Profit / (Loss) for Period',
             value: finalNetProfit,
-            isProfitLoss: true 
+            isProfitLoss: true
         });
         reportData.equity.total += finalNetProfit;
 
@@ -884,7 +1147,7 @@ const getProfitLoss = async (req, res) => {
         };
 
         const currentData = await fetchLedgerData(startDate, endDate);
-        
+
         // For growth comparison, we use the same dates but in the previous year
         const prevStart = new Date(startDate);
         prevStart.setFullYear(prevStart.getFullYear() - 1);
@@ -895,10 +1158,10 @@ const getProfitLoss = async (req, res) => {
         // --- ACCOUNTING LOGIC: Closing Stock Adjustment ---
         // P&L Net Profit = (Income - Expense) + Closing Stock
         const closingStock = await calculateInventoryValue(companyId);
-        
+
         // Adjust current year data
         currentData.netProfit += closingStock;
-        
+
         // If closing stock isn't in COGS yet, we should ideally show it as a deduction in COGS section
         // But for simplicity in this report, we'll add it to "Other Income" or a specific "Closing Stock" row
         if (closingStock > 0) {
@@ -1620,7 +1883,12 @@ const getAllTransactions = async (req, res) => {
 
 module.exports = {
     getSalesReport,
+    getSalesByItemReport,
+    getSalesByCustomerReport,
+    getSalesBySalesmanReport,
     getPurchaseReport,
+    getPurchaseByItemReport,
+    getPurchaseByVendorReport,
     getPosReport,
     getTaxReport,
     getInventorySummary,

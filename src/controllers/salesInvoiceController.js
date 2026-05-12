@@ -25,30 +25,34 @@ const createInvoice = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Customer ledger not found' });
         }
 
-        // 2. Resolve Standard Ledgers
-        const resolveLedger = async (tx, namePattern, type) => {
-            return await tx.ledger.findFirst({
-                where: {
-                    companyId: parseInt(companyId),
-                    name: { contains: namePattern },
-                    accountgroup: { type: type }
-                }
+        // 2. Resolve Standard Ledgers (Auto-create if missing)
+        const resolveLedger = async (txOrPrisma, namePattern, type) => {
+            let ledger = await txOrPrisma.ledger.findFirst({
+                where: { companyId: parseInt(companyId), name: { contains: namePattern } }
             });
+            if (!ledger) {
+                const group = await txOrPrisma.accountgroup.findFirst({ where: { companyId: parseInt(companyId), type: type } });
+                if (group) {
+                    ledger = await txOrPrisma.ledger.create({
+                        data: {
+                            name: namePattern,
+                            groupId: group.id,
+                            companyId: parseInt(companyId),
+                            isControlAccount: true
+                        }
+                    });
+                }
+            }
+            return ledger;
         };
 
-        const salesLedger = await resolveLedger(prisma, 'Sales', 'INCOME') || await prisma.ledger.create({
-            data: {
-                name: 'Sales Revenue',
-                groupId: (await prisma.accountgroup.findFirst({ where: { companyId: parseInt(companyId), type: 'INCOME' } }))?.id || 
-                         (await prisma.accountgroup.create({ data: { name: 'Income', type: 'INCOME', companyId: parseInt(companyId) } })).id,
-                companyId: parseInt(companyId),
-                openingBalance: 0, currentBalance: 0
-            }
-        });
-
-        const cogsLedger = await resolveLedger(prisma, 'Cost of Goods Sold', 'EXPENSES') || await resolveLedger(prisma, 'COGS', 'EXPENSES');
-        const inventoryLedger = await resolveLedger(prisma, 'Inventory Asset', 'ASSETS') || await resolveLedger(prisma, 'Inventory', 'ASSETS');
+        const salesLedger = await resolveLedger(prisma, 'Sales Income', 'INCOME');
+        const cogsLedger = await resolveLedger(prisma, 'Cost of Goods Sold', 'EXPENSES');
+        const inventoryLedger = await resolveLedger(prisma, 'Inventory Asset', 'ASSETS');
         const taxLedger = await resolveLedger(prisma, 'Tax', 'LIABILITIES');
+
+        if (!salesLedger) throw new Error('Could not resolve or create Sales Income ledger');
+
 
 
         let subtotal = 0;
@@ -251,7 +255,7 @@ const createInvoice = async (req, res) => {
             }
 
             // C. Accounting Entries (Double Entry)
-            
+
             // 1. DR Customer, CR Sales Income
             const journal = await tx.journalentry.create({
                 data: {
@@ -729,7 +733,7 @@ const deleteInvoice = async (req, res) => {
             const journalEntryIds = invoice.transaction.map(t => t.journalEntryId).filter(Boolean);
 
             await tx.transaction.deleteMany({ where: { invoiceId: invoice.id } });
-            
+
             if (journalEntryIds.length > 0) {
                 await tx.journalentry.deleteMany({ where: { id: { in: journalEntryIds } } });
             }

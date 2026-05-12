@@ -58,20 +58,23 @@ const createReturn = async (req, res) => {
                 });
             }
 
-            // 3. Ledger Posting (Dr Vendor, Cr Inventory/Expense + Tax Reversal)
-            // Retrieve Vendor Ledger
+            // 3. Ledger Posting (Dr Vendor, Cr Inventory/Purchase)
             const vendor = await tx.vendor.findUnique({ where: { id: parseInt(vendorId) }, include: { ledger: true } });
             if (!vendor || !vendor.ledger) throw new Error('Vendor ledger not found');
 
-            // Retrieve Inventory/Purchase Ledger (Simplification: using a default Purchase Account or Product's Account)
-            // For this implementation, we'll assume a "Purchase Account" ledger exists.
-            const purchaseLedger = await tx.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: 'Purchases' } // Should be dynamic
+            // Resolve Ledgers
+            const inventoryLedger = await tx.ledger.findFirst({
+                where: { companyId: parseInt(companyId), name: { contains: 'Inventory' }, accountgroup: { type: 'ASSETS' } }
             });
-            if (!purchaseLedger) throw new Error('Purchase ledger not found');
+            const purchaseLedger = await tx.ledger.findFirst({
+                where: { companyId: parseInt(companyId), name: { contains: 'Purchase' }, accountgroup: { type: 'EXPENSES' } }
+            });
 
             const debitLedgerId = vendor.ledger.id;
-            const creditLedgerId = purchaseLedger.id;
+            const creditLedgerId = inventoryLedger?.id || purchaseLedger?.id;
+            
+            if (!creditLedgerId) throw new Error('Could not find appropriate ledger (Inventory or Purchase) for return');
+
 
             // Create Journal Entry
             const journalEntry = await tx.journalentry.create({

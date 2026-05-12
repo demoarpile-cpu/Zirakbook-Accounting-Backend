@@ -4,7 +4,12 @@ const reportController = require('../controllers/reportController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
 router.get('/sales', authenticateToken, reportController.getSalesReport);
+router.get('/sales-by-item', authenticateToken, reportController.getSalesByItemReport);
+router.get('/sales-by-customer', authenticateToken, reportController.getSalesByCustomerReport);
+router.get('/sales-by-salesman', authenticateToken, reportController.getSalesBySalesmanReport);
 router.get('/purchase', authenticateToken, reportController.getPurchaseReport);
+router.get('/purchase-by-item', authenticateToken, reportController.getPurchaseByItemReport);
+router.get('/purchase-by-vendor', authenticateToken, reportController.getPurchaseByVendorReport);
 router.get('/pos', authenticateToken, reportController.getPosReport);
 router.get('/tax', authenticateToken, reportController.getTaxReport);
 router.get('/inventory-summary', authenticateToken, reportController.getInventorySummary);

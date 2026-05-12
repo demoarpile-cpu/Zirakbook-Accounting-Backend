@@ -81,12 +81,27 @@ const createBill = async (req, res) => {
             const vendor = await tx.vendor.findUnique({ where: { id: parseInt(vendorId) }, include: { ledger: true } });
             if (!vendor || !vendor.ledger) throw new Error('Vendor ledger not found. Please link a ledger to this vendor first.');
 
-            // Helper to resolve ledgers
+            // Helper to resolve ledgers (Auto-create if missing)
             const resolveLedger = async (namePattern, type) => {
-                return await tx.ledger.findFirst({
-                    where: { companyId: parseInt(companyId), name: { contains: namePattern }, accountgroup: { type: type } }
+                let ledger = await tx.ledger.findFirst({
+                    where: { companyId: parseInt(companyId), name: { contains: namePattern } }
                 });
+                if (!ledger) {
+                    const group = await tx.accountgroup.findFirst({ where: { companyId: parseInt(companyId), type: type } });
+                    if (group) {
+                        ledger = await tx.ledger.create({
+                            data: {
+                                name: namePattern,
+                                groupId: group.id,
+                                companyId: parseInt(companyId),
+                                isControlAccount: true
+                            }
+                        });
+                    }
+                }
+                return ledger;
             };
+
 
             const inventoryLedger = await resolveLedger('Inventory Asset', 'ASSETS') || await resolveLedger('Inventory', 'ASSETS');
             const purchaseLedger = await resolveLedger('Purchases', 'EXPENSES') || await resolveLedger('Purchase', 'EXPENSES');
@@ -138,7 +153,33 @@ const createBill = async (req, res) => {
                     }
                 });
                 await tx.ledger.update({ where: { id: inventoryLedger.id }, data: { currentBalance: { increment: totalProductAmount } } });
+                
+                // NEW: Update Physical Stock if no GRN was linked
+                if (!grnId) {
+                    for (const item of billItems) {
+                        if (item.productId && item.warehouseId) {
+                            await tx.stock.upsert({
+                                where: { warehouseId_productId: { warehouseId: item.warehouseId, productId: item.productId } },
+                                update: { quantity: { increment: item.quantity } },
+                                create: { warehouseId: item.warehouseId, productId: item.productId, quantity: item.quantity }
+                            });
+
+                            await tx.inventorytransaction.create({
+                                data: {
+                                    date: new Date(date),
+                                    type: 'PURCHASE',
+                                    productId: item.productId,
+                                    toWarehouseId: item.warehouseId,
+                                    quantity: item.quantity,
+                                    reason: `Direct Purchase Bill: ${billNumber}`,
+                                    companyId: parseInt(companyId)
+                                }
+                            });
+                        }
+                    }
+                }
             }
+
 
             // Entry for Services/Others (Debit Purchases Expense)
             const finalPurchaseLedger = purchaseLedger || inventoryLedger; // Fallback

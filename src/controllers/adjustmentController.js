@@ -153,16 +153,31 @@ const createAdjustment = async (req, res) => {
                 }
             }
 
-            // 3. Accounting Integration
-            const inventoryAsset = await tx.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: 'Inventory Asset' }
-            });
-            const adjExpense = await tx.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: 'Inventory Adjustment Expense' }
-            });
-            const salesIncome = await tx.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: 'Sales Income' }
-            });
+            // 3. Accounting Integration (Professional Double Entry)
+            const resolveLedger = async (namePattern, type) => {
+                let ledger = await tx.ledger.findFirst({
+                    where: { companyId: parseInt(companyId), name: { contains: namePattern } }
+                });
+                if (!ledger) {
+                    const group = await tx.accountgroup.findFirst({ where: { companyId: parseInt(companyId), type: type } });
+                    if (group) {
+                        ledger = await tx.ledger.create({
+                            data: {
+                                name: namePattern,
+                                groupId: group.id,
+                                companyId: parseInt(companyId),
+                                isControlAccount: true
+                            }
+                        });
+                    }
+                }
+                return ledger;
+            };
+
+            const inventoryAsset = await resolveLedger('Inventory Asset', 'ASSETS');
+            const adjExpense = await resolveLedger('Inventory Adjustment Expense', 'EXPENSES');
+            const salesIncome = await resolveLedger('Sales Income', 'INCOME');
+
 
             if (inventoryAsset) {
                 let debitLedgerId, creditLedgerId;
