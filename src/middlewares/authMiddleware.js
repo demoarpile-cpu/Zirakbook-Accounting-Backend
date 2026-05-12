@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 const prisma = require('../config/prisma');
 
+// Simple in-memory cache for company expiry checks
+const expiryCache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
 const authenticateToken = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -12,24 +16,38 @@ const authenticateToken = async (req, res, next) => {
     try {
         const user = jwt.verify(token, process.env.JWT_SECRET);
         
-        // Check for company plan expiration in real-time
+        // Check for company plan expiration
         if (user.role !== 'SUPERADMIN' && user.companyId) {
-            const company = await prisma.company.findUnique({
-                where: { id: parseInt(user.companyId) },
-                select: { endDate: true }
-            });
+            const now = Date.now();
+            const cached = expiryCache.get(user.companyId);
 
-            if (company && company.endDate) {
-                const expiryDate = new Date(company.endDate);
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                
-                if (expiryDate < today) {
-                    return res.status(403).json({ 
-                        message: 'Your company plan has expired. Please contact super admin to renew your plan.',
-                        isExpired: true 
-                    });
+            let isExpired = false;
+            let expiryDate = null;
+
+            if (cached && (now - cached.timestamp < CACHE_DURATION)) {
+                isExpired = cached.isExpired;
+            } else {
+                const company = await prisma.company.findUnique({
+                    where: { id: parseInt(user.companyId) },
+                    select: { endDate: true }
+                });
+
+                if (company && company.endDate) {
+                    expiryDate = new Date(company.endDate);
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    isExpired = expiryDate < today;
                 }
+
+                // Update cache
+                expiryCache.set(user.companyId, { timestamp: now, isExpired });
+            }
+
+            if (isExpired) {
+                return res.status(403).json({ 
+                    message: 'Your company plan has expired. Please contact super admin to renew your plan.',
+                    isExpired: true 
+                });
             }
         }
 

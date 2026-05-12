@@ -202,7 +202,7 @@ const createAdjustment = async (req, res) => {
             }
 
             return adjustment;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, message: 'Adjustment saved successfully', data: result });
     } catch (error) {
@@ -281,7 +281,7 @@ const deleteAdjustment = async (req, res) => {
             });
 
             await tx.inventoryadjustment.delete({ where: { id: parseInt(id) } });
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, message: 'Adjustment deleted and stock reversed' });
     } catch (error) {
@@ -440,7 +440,7 @@ const updateAdjustment = async (req, res) => {
             }
 
             return updatedAdj;
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, message: 'Adjustment updated successfully', data: result });
     } catch (error) {

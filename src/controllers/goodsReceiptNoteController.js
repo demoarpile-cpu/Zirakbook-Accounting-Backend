@@ -74,7 +74,7 @@ const createGRN = async (req, res) => {
             }
 
             return grn;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -165,7 +165,7 @@ const deleteGRN = async (req, res) => {
             // 3. Delete GRN Items and GRN
             await tx.goodsreceiptnoteitem.deleteMany({ where: { grnId: grn.id } });
             await tx.goodsreceiptnote.delete({ where: { id: grn.id } });
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, message: 'GRN deleted successfully' });
     } catch (error) {

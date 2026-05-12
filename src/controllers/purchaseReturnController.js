@@ -261,22 +261,69 @@ const deleteReturn = async (req, res) => {
         const { id } = req.params;
         const companyId = req.user?.companyId || req.query.companyId;
 
-        const existingReturn = await prisma.purchasereturn.findFirst({
-            where: { id: parseInt(id), companyId: parseInt(companyId) }
+        const purchaseReturn = await prisma.purchasereturn.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: { purchasereturnitem: true }
         });
 
-        if (!existingReturn) {
+        if (!purchaseReturn) {
             return res.status(404).json({ success: false, message: 'Purchase return not found' });
         }
 
-        // Delete items first
-        await prisma.purchasereturnitem.deleteMany({
-            where: { purchaseReturnId: parseInt(id) }
-        });
+        await prisma.$transaction(async (tx) => {
+            // 1. Revert Stock
+            for (const item of purchaseReturn.purchasereturnitem) {
+                await tx.stock.update({
+                    where: { warehouseId_productId: { warehouseId: item.warehouseId, productId: item.productId } },
+                    data: { quantity: { increment: item.quantity } }
+                });
+            }
 
-        // Delete the return
-        await prisma.purchasereturn.delete({
-            where: { id: parseInt(id) }
+            // 2. Revert Ledger Balances and Vendor Balance
+            const txs = await tx.transaction.findMany({
+                where: { 
+                    companyId: parseInt(companyId),
+                    voucherNumber: purchaseReturn.returnNumber,
+                    voucherType: 'PURCHASE_RETURN'
+                }
+            });
+
+            for (const t of txs) {
+                await tx.ledger.update({
+                    where: { id: t.debitLedgerId },
+                    data: { currentBalance: { increment: t.amount } } // Vendor (Liability) increases back
+                });
+                await tx.ledger.update({
+                    where: { id: t.creditLedgerId },
+                    data: { currentBalance: { increment: t.amount } } // Purchase (Expense) increases back
+                });
+            }
+
+            await tx.vendor.update({
+                where: { id: purchaseReturn.vendorId },
+                data: { accountBalance: { increment: purchaseReturn.totalAmount } }
+            });
+
+            // 3. Cleanup Accounting Records
+            const journalEntryIds = [...new Set(txs.map(t => t.journalEntryId).filter(Boolean))];
+            
+            await tx.transaction.deleteMany({
+                where: { 
+                    companyId: parseInt(companyId),
+                    voucherNumber: purchaseReturn.returnNumber,
+                    voucherType: 'PURCHASE_RETURN'
+                }
+            });
+
+            if (journalEntryIds.length > 0) {
+                await tx.journalentry.deleteMany({
+                    where: { id: { in: journalEntryIds } }
+                });
+            }
+
+            // 4. Delete Return items and document
+            await tx.purchasereturnitem.deleteMany({ where: { purchaseReturnId: purchaseReturn.id } });
+            await tx.purchasereturn.delete({ where: { id: purchaseReturn.id } });
         });
 
         res.status(200).json({ success: true, message: 'Purchase return deleted successfully' });

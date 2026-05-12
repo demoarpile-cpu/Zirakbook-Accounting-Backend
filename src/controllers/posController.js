@@ -244,8 +244,8 @@ const createPOSInvoice = async (req, res) => {
 
             return posInvoice;
         }, {
-            maxWait: 5000, // Maximum time for the transaction manager to wait for a connection
-            timeout: 30000 // Total time the transaction can take (30 seconds)
+            maxWait: 5000,
+            timeout: 30000
         });
 
         res.status(201).json({ success: true, data: result });

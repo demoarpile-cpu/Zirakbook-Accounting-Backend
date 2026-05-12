@@ -152,10 +152,8 @@ const createReturn = async (req, res) => {
                 }
             }
 
-            // 4. Accounting Entry
+            // 4. Accounting Entry (Main)
             // DR Sales Return, CR Customer
-
-            // Update Ledgers
             await tx.ledger.update({
                 where: { id: returnLedger.id },
                 data: { currentBalance: { increment: totalAmount } }
@@ -166,7 +164,6 @@ const createReturn = async (req, res) => {
                 data: { currentBalance: { decrement: totalAmount } }
             });
 
-            // Log Transaction
             await tx.transaction.create({
                 data: {
                     date: new Date(date),
@@ -181,8 +178,43 @@ const createReturn = async (req, res) => {
                 }
             });
 
+            // 5. COGS and Inventory Reversal (DR Inventory, CR COGS)
+            let totalReturnCOGS = 0;
+            for (const item of returnItems) {
+                const product = await tx.product.findUnique({ where: { id: item.productId } });
+                if (product) {
+                    const unitCost = product.purchasePrice || product.initialCost || 0;
+                    totalReturnCOGS += (unitCost * item.quantity);
+                }
+            }
+
+            if (totalReturnCOGS > 0) {
+                const inventoryLedger = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'Inventory' }, accountgroup: { type: 'ASSETS' } } });
+                const cogsLedger = await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'COGS' }, accountgroup: { type: 'EXPENSES' } } }) ||
+                                   await tx.ledger.findFirst({ where: { companyId: parseInt(companyId), name: { contains: 'Cost of Goods Sold' }, accountgroup: { type: 'EXPENSES' } } });
+
+                if (inventoryLedger && cogsLedger) {
+                    await tx.transaction.create({
+                        data: {
+                            date: new Date(date),
+                            voucherType: 'JOURNAL',
+                            voucherNumber: `COGS-REV-${autoVoucherNo}`,
+                            debitLedgerId: inventoryLedger.id,
+                            creditLedgerId: cogsLedger.id,
+                            amount: totalReturnCOGS,
+                            narration: `COGS Reversal for Return: ${returnNumber}`,
+                            companyId: parseInt(companyId),
+                        }
+                    });
+
+                    await tx.ledger.update({ where: { id: inventoryLedger.id }, data: { currentBalance: { increment: totalReturnCOGS } } });
+                    await tx.ledger.update({ where: { id: cogsLedger.id }, data: { currentBalance: { decrement: totalReturnCOGS } } });
+                }
+            }
+
+
             return salesReturn;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -321,7 +353,7 @@ const updateReturn = async (req, res) => {
             });
 
             return updated;
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, data: result });
     } catch (error) {

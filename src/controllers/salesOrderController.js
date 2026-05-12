@@ -148,7 +148,7 @@ const createOrder = async (req, res) => {
             }
 
             return order;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -328,7 +328,7 @@ const updateOrder = async (req, res) => {
                     }
                 }
             });
-        });
+        }, { timeout: 30000 });
 
         const updated = await prisma.salesorder.findFirst({
             where: { id: parseInt(id), companyId: parseInt(companyId) },

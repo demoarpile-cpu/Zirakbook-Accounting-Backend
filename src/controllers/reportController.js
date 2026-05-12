@@ -8,7 +8,7 @@ const calculateInventoryValue = async (companyId) => {
             where: { product: { companyId: parseInt(companyId) } },
             include: { product: true }
         });
-        
+
         let totalValue = 0;
         stocks.forEach(s => {
             const price = s.product.purchasePrice || s.product.initialCost || 0;
@@ -25,11 +25,11 @@ const calculateInventoryValue = async (companyId) => {
 const ensureInventoryLedgers = async (companyId) => {
     try {
         const companyIdInt = parseInt(companyId);
-        
+
         // Find Groups
         const assetsGroup = await prisma.accountgroup.findFirst({ where: { companyId: companyIdInt, type: 'ASSETS' } });
         const equityGroup = await prisma.accountgroup.findFirst({ where: { companyId: companyIdInt, type: 'EQUITY' } });
-        
+
         if (!assetsGroup || !equityGroup) return;
 
         // Check/Create Inventory Asset
@@ -617,39 +617,49 @@ const getBalanceSheet = async (req, res) => {
         });
 
         // 2. Calculate Net Profit/Loss
-        // Profit = Income - Expense
-        const netProfit = totalIncome - totalExpense;
-        reportData.netProfit = netProfit;
+        // Standard Accounting: Net Profit = (Income - Expense)
+        // Note: Closing Stock adjustment is done below.
+        const netProfitAccrual = totalIncome - totalExpense;
 
         // 3. Dynamic Inventory Adjustment (Closing Stock)
-        // If we are showing inventory in Assets, we must reflect its value in Profit (Ending Inventory)
+        // Closing stock increases profit (reduces COGS) and is an asset.
         const currentInventoryValue = await calculateInventoryValue(companyId);
-        
-        // Find if any ledger already represents Inventory
+
+        // Find if any ledger already represents Inventory in Assets
         const hasInventoryLedger = reportData.assets.current.some(a => a.name.toLowerCase().includes('inventory'));
+        
         if (!hasInventoryLedger && currentInventoryValue > 0) {
-            reportData.assets.current.push({ name: 'Closing Stock (Inventory)', value: currentInventoryValue });
+            reportData.assets.current.push({ 
+                name: 'Closing Stock (Inventory)', 
+                value: currentInventoryValue,
+                isClosingStock: true 
+            });
             reportData.assets.total += currentInventoryValue;
-            
-            // Adjust Profit: Profit = (Income + ClosingStock) - Expense
-            // We add Closing Stock to the Equity side to balance
-            reportData.equity.items.push({ name: 'Closing Stock Adjustment', value: currentInventoryValue });
-            reportData.equity.total += currentInventoryValue;
         }
 
-        // Add Net Profit to Equity
-        reportData.equity.items.push({ name: 'Net Profit/Loss', value: netProfit });
-        reportData.equity.total += netProfit;
+        // The Real Net Profit = (Income - Expense) + Closing Stock (if purchases were expensed)
+        // In this system, purchases are usually recorded as expenses. 
+        // So Net Profit = Total Income - Total Expenses + Closing Stock Value
+        const finalNetProfit = netProfitAccrual + currentInventoryValue;
+        reportData.netProfit = finalNetProfit;
 
-        // 4. Final Balance Check & Adjustment (Ensures Balance Sheet always balances)
+        // Add Net Profit to Equity
+        reportData.equity.items.push({ 
+            name: 'Net Profit / (Loss) for Period', 
+            value: finalNetProfit,
+            isProfitLoss: true 
+        });
+        reportData.equity.total += finalNetProfit;
+
+        // 4. Final Balance Check & Adjustment
         const totalAssets = reportData.assets.total;
         const totalLiabEquity = reportData.liabilities.total + reportData.equity.total;
         const bsDifference = totalAssets - totalLiabEquity;
 
         if (Math.abs(bsDifference) > 0.01) {
-            reportData.equity.items.push({ 
-                name: 'Opening Balance Adjustment', 
-                value: bsDifference 
+            reportData.equity.items.push({
+                name: 'Opening Balance Equity / Difference',
+                value: bsDifference
             });
             reportData.equity.total += bsDifference;
         }
@@ -729,15 +739,27 @@ const getProfitLoss = async (req, res) => {
         const companyId = req.user?.companyId || req.query.companyId;
         if (!companyId) return res.status(400).json({ success: false, message: 'Company ID is required' });
 
-        const year = parseInt(req.query.year) || new Date().getFullYear();
+
+        const { startDate: qStart, endDate: qEnd, year: qYear } = req.query;
+
+        // Determine date range
+        let startDate, endDate, year;
+        if (qStart && qEnd) {
+            startDate = new Date(qStart);
+            endDate = new Date(qEnd);
+            endDate.setHours(23, 59, 59, 999);
+            year = startDate.getFullYear(); // For growth comparison fallback
+        } else {
+            year = parseInt(qYear) || new Date().getFullYear();
+            startDate = new Date(`${year}-01-01`);
+            endDate = new Date(`${year}-12-31`);
+            endDate.setHours(23, 59, 59, 999);
+        }
+
         const prevYear = year - 1;
 
         // Helper to fetch ledger balances matching type
-        const fetchLedgerData = async (targetYear) => {
-            const startDate = new Date(`${targetYear}-01-01`);
-            const endDate = new Date(`${targetYear}-12-31`);
-            endDate.setHours(23, 59, 59, 999);
-
+        const fetchLedgerData = async (start, end) => {
             // Fetch Ledgers with Group and Sub-Group info
             const ledgers = await prisma.ledger.findMany({
                 where: {
@@ -746,20 +768,16 @@ const getProfitLoss = async (req, res) => {
                         type: { in: ['INCOME', 'EXPENSES'] }
                     }
                 },
-                include: { 
+                include: {
                     accountgroup: true,
                     accountsubgroup: true
                 }
             });
 
-            // Fetch Transactions for these ledgers in the year
-            // Note: Optimally we should filter transactions by ledger IDs found above
-            // But 'transaction' table stores debitLedgerId and creditLedgerId
-
             const transactions = await prisma.transaction.findMany({
                 where: {
                     companyId: parseInt(companyId),
-                    date: { gte: startDate, lte: endDate }
+                    date: { gte: start, lte: end }
                 }
             });
 
@@ -767,7 +785,7 @@ const getProfitLoss = async (req, res) => {
             let totalIncome = 0;
             let totalExpense = 0;
             const monthlyData = Array(12).fill(0).map(() => ({ income: 0, expense: 0 }));
-            
+
             // Standard P&L Categories
             const statement = {
                 revenue: { items: [], total: 0 },
@@ -781,7 +799,7 @@ const getProfitLoss = async (req, res) => {
             ledgers.forEach(l => {
                 const openBal = parseFloat(l.openingBalance || 0);
                 ledgerValues[l.id] = openBal;
-                
+
                 // Income and Expenses opening balances contribute to the net profit
                 if (l.accountgroup.type === 'INCOME') totalIncome += openBal;
                 if (l.accountgroup.type === 'EXPENSES') totalExpense += openBal;
@@ -790,15 +808,6 @@ const getProfitLoss = async (req, res) => {
             transactions.forEach(txn => {
                 const month = new Date(txn.date).getMonth(); // 0-11
                 const amount = txn.amount || 0;
-
-                // Check Debit (Expense +) or Credit (Income +)
-                // We need to match ledger ID to know type
-
-                // Logic: 
-                // If debitLedger is Expense -> Expense +
-                // If creditLedger is Income -> Income +
-                // Reversals? If debitLedger is Income -> Income -
-                // If creditLedger is Expense -> Expense -
 
                 const debitLedger = ledgers.find(l => l.id === txn.debitLedgerId);
                 const creditLedger = ledgers.find(l => l.id === txn.creditLedgerId);
@@ -849,9 +858,9 @@ const getProfitLoss = async (req, res) => {
                         statement.revenue.total += val;
                     }
                 } else if (groupType === 'EXPENSES') {
-                    if (subGroupName.includes('direct') || 
-                        ledgerName.includes('cost of goods sold') || 
-                        ledgerName.includes('cogs') || 
+                    if (subGroupName.includes('direct') ||
+                        ledgerName.includes('cost of goods sold') ||
+                        ledgerName.includes('cogs') ||
                         ledgerName.includes('purchases')) {
                         statement.cogs.items.push(item);
                         statement.cogs.total += val;
@@ -874,13 +883,37 @@ const getProfitLoss = async (req, res) => {
             };
         };
 
-        const currentData = await fetchLedgerData(year);
-        const prevData = await fetchLedgerData(prevYear);
+        const currentData = await fetchLedgerData(startDate, endDate);
+        
+        // For growth comparison, we use the same dates but in the previous year
+        const prevStart = new Date(startDate);
+        prevStart.setFullYear(prevStart.getFullYear() - 1);
+        const prevEnd = new Date(endDate);
+        prevEnd.setFullYear(prevEnd.getFullYear() - 1);
+        const prevData = await fetchLedgerData(prevStart, prevEnd);
+
+        // --- ACCOUNTING LOGIC: Closing Stock Adjustment ---
+        // P&L Net Profit = (Income - Expense) + Closing Stock
+        const closingStock = await calculateInventoryValue(companyId);
+        
+        // Adjust current year data
+        currentData.netProfit += closingStock;
+        
+        // If closing stock isn't in COGS yet, we should ideally show it as a deduction in COGS section
+        // But for simplicity in this report, we'll add it to "Other Income" or a specific "Closing Stock" row
+        if (closingStock > 0) {
+            currentData.statement.otherIncome.items.push({
+                id: 'closing-stock-adj',
+                name: 'Closing Stock (Inventory)',
+                value: closingStock
+            });
+            currentData.statement.otherIncome.total += closingStock;
+        }
 
         // Calculate Growth %
         const calcGrowth = (curr, prev) => {
             if (prev === 0) return curr === 0 ? 0 : 100;
-            return ((curr - prev) / prev * 100).toFixed(1);
+            return parseFloat(((curr - prev) / Math.abs(prev) * 100).toFixed(1));
         };
 
         const summary = {
@@ -1390,7 +1423,7 @@ const getTrialBalance = async (req, res) => {
         if (Math.abs(tbDifference) > 0.01) {
             // Check if we already have Opening Balance Equity in the list
             const obeIndex = trialBalance.findIndex(item => item.name.toLowerCase().includes('opening balance equity'));
-            
+
             if (obeIndex !== -1) {
                 // Adjust existing OBE to absorb the difference
                 // TB needs: TotalDebit == TotalCredit
@@ -1401,7 +1434,7 @@ const getTrialBalance = async (req, res) => {
                 } else {
                     trialBalance[obeIndex].debit += Math.abs(tbDifference);
                 }
-                
+
                 // Convert back to net balance for display
                 const net = trialBalance[obeIndex].debit - trialBalance[obeIndex].credit;
                 trialBalance[obeIndex].debit = net > 0 ? net : 0;
@@ -1421,7 +1454,7 @@ const getTrialBalance = async (req, res) => {
         // 5. Dynamic Inventory for TB (Calculated separately as it's not in ledgers)
         const currentInventoryValue = await calculateInventoryValue(companyId);
         const hasInventory = trialBalance.some(b => b.name.toLowerCase().includes('inventory'));
-        
+
         if (!hasInventory && currentInventoryValue > 0) {
             trialBalance.push({
                 id: 999999, // Virtual ID

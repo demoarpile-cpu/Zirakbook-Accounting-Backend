@@ -463,22 +463,59 @@ const deleteVoucher = async (req, res) => {
         const { id } = req.params;
         const companyId = req.user.companyId;
 
-        const existingVoucher = await prisma.voucher.findFirst({
-            where: { id: parseInt(id), companyId: parseInt(companyId) }
+        const voucher = await prisma.voucher.findFirst({
+            where: { id: parseInt(id), companyId: parseInt(companyId) },
+            include: { voucheritem: true }
         });
 
-        if (!existingVoucher) {
+        if (!voucher) {
             return res.status(404).json({ success: false, message: 'Voucher not found' });
         }
 
-        // Delete items first
-        await prisma.voucheritem.deleteMany({
-            where: { voucherId: parseInt(id) }
-        });
+        await prisma.$transaction(async (tx) => {
+            // 1. Revert Accounting Entries if it was a Journal or other financial voucher
+            // Journal entries are linked via transactions sharing the same voucherNumber and companyId
+            const txs = await tx.transaction.findMany({
+                where: {
+                    companyId: parseInt(companyId),
+                    voucherNumber: voucher.voucherNumber,
+                    voucherType: { in: ['JOURNAL', 'PAYMENT', 'RECEIPT', 'CONTRA'] }
+                }
+            });
 
-        // Delete voucher
-        await prisma.voucher.delete({
-            where: { id: parseInt(id) }
+            for (const t of txs) {
+                // Reverse balances based on the same logic as creation
+                // Debit side (Decrement because it was Incremented)
+                await tx.ledger.update({
+                    where: { id: t.debitLedgerId },
+                    data: { currentBalance: { decrement: t.amount } }
+                });
+                // Credit side (Increment because it was Decremented)
+                await tx.ledger.update({
+                    where: { id: t.creditLedgerId },
+                    data: { currentBalance: { increment: t.amount } }
+                });
+            }
+
+            // 2. Delete Transactions and associated Journal Entries
+            const journalEntryIds = [...new Set(txs.map(t => t.journalEntryId).filter(Boolean))];
+            await tx.transaction.deleteMany({
+                where: {
+                    companyId: parseInt(companyId),
+                    voucherNumber: voucher.voucherNumber,
+                    voucherType: { in: ['JOURNAL', 'PAYMENT', 'RECEIPT', 'CONTRA'] }
+                }
+            });
+
+            if (journalEntryIds.length > 0) {
+                await tx.journalentry.deleteMany({
+                    where: { id: { in: journalEntryIds } }
+                });
+            }
+
+            // 3. Delete Voucher Items and Voucher
+            await tx.voucheritem.deleteMany({ where: { voucherId: voucher.id } });
+            await tx.voucher.delete({ where: { id: voucher.id } });
         });
 
         res.status(200).json({ success: true, message: 'Voucher deleted successfully' });

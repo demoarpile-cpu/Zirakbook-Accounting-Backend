@@ -585,11 +585,71 @@ const deleteCustomer = async (req, res) => {
     }
 };
 
+// Recalculate Customer Ledger Balance
+const recalculateBalance = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const companyId = req.user.companyId;
+
+        const customer = await prisma.customer.findFirst({
+            where: { id: parseInt(id), companyId: companyId },
+            include: { ledger: true }
+        });
+
+        if (!customer || !customer.ledgerId) {
+            return res.status(404).json({ success: false, message: 'Customer or Ledger not found' });
+        }
+
+        const transactions = await prisma.transaction.findMany({
+            where: {
+                companyId: companyId,
+                OR: [
+                    { debitLedgerId: customer.ledgerId },
+                    { creditLedgerId: customer.ledgerId }
+                ]
+            }
+        });
+
+        let newBalance = customer.ledger.openingBalance;
+        for (const tx of transactions) {
+            if (tx.debitLedgerId === customer.ledgerId) {
+                newBalance += tx.amount;
+            } else {
+                newBalance -= tx.amount;
+            }
+        }
+
+        // Update both Ledger and Customer model for consistency
+        await prisma.ledger.update({
+            where: { id: customer.ledgerId },
+            data: { currentBalance: newBalance }
+        });
+
+        await prisma.customer.update({
+            where: { id: customer.id },
+            data: { accountBalance: newBalance }
+        });
+
+        res.status(200).json({
+            success: true,
+            message: 'Balance recalculated successfully',
+            data: {
+                oldBalance: customer.ledger.currentBalance,
+                newBalance: newBalance
+            }
+        });
+    } catch (error) {
+        console.error('Recalculate Error:', error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
     createCustomer,
     getAllCustomers,
     getCustomerById,
     updateCustomer,
     deleteCustomer,
-    getCustomerStatement
+    getCustomerStatement,
+    recalculateBalance
 };

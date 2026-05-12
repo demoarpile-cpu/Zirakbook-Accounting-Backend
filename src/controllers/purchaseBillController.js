@@ -77,67 +77,21 @@ const createBill = async (req, res) => {
                 });
             }
 
-            // 2. Ledger Posting (Dr Purchase/Inventory, Cr Vendor)
-            // Retrieve Vendor Ledger
+            // 2. Ledger Posting (Dr Inventory/Purchase, Cr Vendor)
             const vendor = await tx.vendor.findUnique({ where: { id: parseInt(vendorId) }, include: { ledger: true } });
             if (!vendor || !vendor.ledger) throw new Error('Vendor ledger not found. Please link a ledger to this vendor first.');
 
-            // Retrieve Purchase Ledger (Dynamic: ideally from product category or default)
-            // Retrieve Purchase Ledger (Dynamic: ideally from product category or default)
-            let purchaseLedger = await tx.ledger.findFirst({
-                where: { companyId: parseInt(companyId), name: 'Purchases' }
-            });
-
-            // Auto-create Ledger if missing
-            if (!purchaseLedger) {
-                // 1. Find or Create 'Expenses' Group
-                let expenseGroup = await tx.accountgroup.findFirst({
-                    where: { companyId: parseInt(companyId), name: 'Expenses' }
+            // Helper to resolve ledgers
+            const resolveLedger = async (namePattern, type) => {
+                return await tx.ledger.findFirst({
+                    where: { companyId: parseInt(companyId), name: { contains: namePattern }, accountgroup: { type: type } }
                 });
-                if (!expenseGroup) {
-                    expenseGroup = await tx.accountgroup.create({
-                        data: {
-                            companyId: parseInt(companyId),
-                            name: 'Expenses',
-                            type: 'EXPENSES'
-                        }
-                    });
-                }
+            };
 
-                // 2. Find or Create 'Purchase Accounts' SubGroup
-                let purchaseSubGroup = await tx.accountsubgroup.findFirst({
-                    where: { companyId: parseInt(companyId), name: 'Purchase Accounts' }
-                });
-                if (!purchaseSubGroup) {
-                    purchaseSubGroup = await tx.accountsubgroup.create({
-                        data: {
-                            companyId: parseInt(companyId),
-                            name: 'Purchase Accounts',
-                            groupId: expenseGroup.id
-                        }
-                    });
-                }
+            const inventoryLedger = await resolveLedger('Inventory Asset', 'ASSETS') || await resolveLedger('Inventory', 'ASSETS');
+            const purchaseLedger = await resolveLedger('Purchases', 'EXPENSES') || await resolveLedger('Purchase', 'EXPENSES');
 
-                // 3. Create Ledger
-                purchaseLedger = await tx.ledger.create({
-                    data: {
-                        name: 'Purchases',
-                        groupId: expenseGroup.id,
-                        subGroupId: purchaseSubGroup.id,
-                        companyId: parseInt(companyId),
-                        openingBalance: 0,
-                        currentBalance: 0,
-                        isControlAccount: false,
-                        isEnabled: true,
-                        description: 'General Purchases Account'
-                    }
-                });
-            }
-
-            const debitLedgerId = purchaseLedger.id;
-            const creditLedgerId = vendor.ledger.id;
-
-            // Create Journal Entry
+            // 3. Create Journal Entry
             const journalEntry = await tx.journalentry.create({
                 data: {
                     date: new Date(date),
@@ -147,37 +101,83 @@ const createBill = async (req, res) => {
                 }
             });
 
-            // Credit Vendor (Liability Increase)
-            await tx.transaction.create({
-                data: {
-                    date: new Date(date),
-                    amount: parseFloat(totalAmount),
-                    debitLedgerId: debitLedgerId, // Purchase Dr
-                    creditLedgerId: creditLedgerId, // Vendor Cr
-                    voucherType: 'PURCHASE',
-                    voucherNumber: billNumber,
-                    companyId: parseInt(companyId),
-                    journalEntryId: journalEntry.id,
-                    purchaseBillId: bill.id, // Linked
-                    narration: 'Purchase Bill Booking'
-                }
-            });
+            // 4. Process Items for Accounting and Price Updates
+            let totalProductAmount = 0;
+            let totalServiceAmount = 0;
 
-            // Update Vendor Balance (Credit increases)
+            for (const item of billItems) {
+                if (item.productId) {
+                    totalProductAmount += item.amount;
+                    // Update Product Purchase Price
+                    await tx.product.update({
+                        where: { id: item.productId },
+                        data: { purchasePrice: item.rate }
+                    });
+                } else {
+                    totalServiceAmount += item.amount;
+                }
+            }
+
+            // 5. DR Inventory / Purchases, CR Vendor
+            const creditLedgerId = vendor.ledger.id;
+
+            // Entry for Products (Debit Inventory)
+            if (totalProductAmount > 0 && inventoryLedger) {
+                await tx.transaction.create({
+                    data: {
+                        date: new Date(date),
+                        amount: totalProductAmount,
+                        debitLedgerId: inventoryLedger.id,
+                        creditLedgerId: creditLedgerId,
+                        voucherType: 'PURCHASE',
+                        voucherNumber: billNumber,
+                        companyId: parseInt(companyId),
+                        journalEntryId: journalEntry.id,
+                        purchaseBillId: bill.id,
+                        narration: 'Product Inventory Purchase'
+                    }
+                });
+                await tx.ledger.update({ where: { id: inventoryLedger.id }, data: { currentBalance: { increment: totalProductAmount } } });
+            }
+
+            // Entry for Services/Others (Debit Purchases Expense)
+            const finalPurchaseLedger = purchaseLedger || inventoryLedger; // Fallback
+            if (totalServiceAmount > 0 && finalPurchaseLedger) {
+                await tx.transaction.create({
+                    data: {
+                        date: new Date(date),
+                        amount: totalServiceAmount,
+                        debitLedgerId: finalPurchaseLedger.id,
+                        creditLedgerId: creditLedgerId,
+                        voucherType: 'PURCHASE',
+                        voucherNumber: billNumber,
+                        companyId: parseInt(companyId),
+                        journalEntryId: journalEntry.id,
+                        purchaseBillId: bill.id,
+                        narration: 'Service/General Purchase'
+                    }
+                });
+                await tx.ledger.update({ where: { id: finalPurchaseLedger.id }, data: { currentBalance: { increment: totalServiceAmount } } });
+            }
+
+            // Handle Tax if applicable (Debit Tax Input)
+            if (parseFloat(taxAmount) > 0) {
+                const taxInputLedger = await resolveLedger('Tax', 'ASSETS') || await resolveLedger('Tax', 'LIABILITIES');
+                if (taxInputLedger) {
+                    await tx.ledger.update({ where: { id: taxInputLedger.id }, data: { currentBalance: { increment: parseFloat(taxAmount) } } });
+                }
+            }
+
+            // Update Vendor Balance (Credit increases Liability)
             await tx.vendor.update({
                 where: { id: parseInt(vendorId) },
                 data: { accountBalance: { increment: parseFloat(totalAmount) } }
             });
-
-            // Update Ledger Balances
             await tx.ledger.update({
                 where: { id: creditLedgerId },
                 data: { currentBalance: { increment: parseFloat(totalAmount) } }
             });
-            await tx.ledger.update({
-                where: { id: debitLedgerId },
-                data: { currentBalance: { increment: parseFloat(totalAmount) } }
-            });
+
 
             return bill;
         }, {

@@ -89,7 +89,7 @@ const createQuotation = async (req, res) => {
             });
 
             return quotation;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -241,7 +241,7 @@ const updateQuotation = async (req, res) => {
                     }
                 }
             });
-        });
+        }, { timeout: 30000 });
 
         const updated = await prisma.purchasequotation.findFirst({
             where: { id: parseInt(id) },

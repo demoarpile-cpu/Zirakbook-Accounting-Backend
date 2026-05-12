@@ -126,7 +126,7 @@ const createChallan = async (req, res) => {
             }
 
             return challan;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, data: result });
     } catch (error) {
@@ -266,7 +266,7 @@ const updateChallan = async (req, res) => {
                     customer: true
                 }
             });
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, data: result });
     } catch (error) {

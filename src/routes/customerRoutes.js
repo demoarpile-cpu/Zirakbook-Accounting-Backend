@@ -13,5 +13,6 @@ router.get('/:id', authorizePermissions('view accounts'), customerController.get
 router.put('/:id', authorizePermissions('edit accounts'), customerController.updateCustomer);
 router.delete('/:id', authorizePermissions('delete accounts'), customerController.deleteCustomer);
 router.get('/:id/statement', authorizePermissions('view accounts'), customerController.getCustomerStatement);
+router.post('/:id/recalculate', authorizePermissions('edit accounts'), customerController.recalculateBalance);
 
 module.exports = router;

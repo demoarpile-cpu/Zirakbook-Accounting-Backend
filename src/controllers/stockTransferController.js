@@ -149,7 +149,7 @@ const createStockTransfer = async (req, res) => {
             }
 
             return transfer;
-        });
+        }, { timeout: 30000 });
 
         res.status(201).json({ success: true, message: 'Stock transfer created successfully', data: result });
     } catch (error) {
@@ -196,7 +196,7 @@ const deleteStockTransfer = async (req, res) => {
             }
 
             await tx.stocktransfer.delete({ where: { id: parseInt(id) } });
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, message: 'Stock transfer deleted and stock reversed successfully' });
     } catch (error) {
@@ -323,7 +323,7 @@ const updateStockTransfer = async (req, res) => {
             }
 
             return updatedTransfer;
-        });
+        }, { timeout: 30000 });
 
         res.status(200).json({ success: true, message: 'Stock transfer updated successfully', data: result });
     } catch (error) {

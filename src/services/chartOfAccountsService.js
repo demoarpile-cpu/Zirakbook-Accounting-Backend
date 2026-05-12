@@ -15,198 +15,153 @@ const initializeChartOfAccounts = async (companyId) => {
             };
         }
 
-        // 2. Check if already initialized
-        const existing = await prisma.accountgroup.findFirst({
-            where: { companyId, name: 'Assets' }
+        // 2. Check if already initialized (at least one group exists)
+        const existingGroups = await prisma.accountgroup.findFirst({
+            where: { companyId }
         });
 
-        if (existing) {
+        if (existingGroups) {
             return {
                 success: true,
                 message: 'Chart of Accounts already initialized'
             };
         }
 
-        // Create Primary Account Groups
-        const assets = await prisma.accountgroup.create({
-            data: {
-                name: 'Assets',
-                type: 'ASSETS',
-                companyId: companyId
-            }
-        });
+        // --- Helper for creating groups, subgroups, and ledgers ---
+        const createCOA = async () => {
+            // 1. ASSETS
+            const assetsGroup = await prisma.accountgroup.create({
+                data: { name: 'Assets', type: 'ASSETS', companyId }
+            });
 
-        const liabilities = await prisma.accountgroup.create({
-            data: {
-                name: 'Liabilities',
-                type: 'LIABILITIES',
-                companyId: companyId
-            }
-        });
+            const cashSub = await prisma.accountsubgroup.create({
+                data: { name: 'Cash', groupId: assetsGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Cash in Hand', groupId: assetsGroup.id, subGroupId: cashSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        const income = await prisma.accountgroup.create({
-            data: {
-                name: 'Income',
-                type: 'INCOME',
-                companyId: companyId
-            }
-        });
+            const bankSub = await prisma.accountsubgroup.create({
+                data: { name: 'Bank Accounts', groupId: assetsGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Main Bank Account', groupId: assetsGroup.id, subGroupId: bankSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        const expenses = await prisma.accountgroup.create({
-            data: {
-                name: 'Expenses',
-                type: 'EXPENSES',
-                companyId: companyId
-            }
-        });
+            const arSub = await prisma.accountsubgroup.create({
+                data: { name: 'Accounts Receivable', groupId: assetsGroup.id, companyId }
+            });
 
-        const equity = await prisma.accountgroup.create({
-            data: {
-                name: 'Equity',
-                type: 'EQUITY',
-                companyId: companyId
-            }
-        });
+            const inventorySub = await prisma.accountsubgroup.create({
+                data: { name: 'Inventory', groupId: assetsGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Inventory Asset', groupId: assetsGroup.id, subGroupId: inventorySub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        // Create Sub Groups under Assets
-        const cash = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Cash',
-                groupId: assets.id,
-                companyId: companyId
-            }
-        });
+            const fixedAssetsSub = await prisma.accountsubgroup.create({
+                data: { name: 'Fixed Assets', groupId: assetsGroup.id, companyId }
+            });
 
-        const bank = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Bank',
-                groupId: assets.id,
-                companyId: companyId
-            }
-        });
+            // 2. LIABILITIES
+            const liabilitiesGroup = await prisma.accountgroup.create({
+                data: { name: 'Liabilities', type: 'LIABILITIES', companyId }
+            });
 
-        const accountsReceivable = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Accounts Receivable',
-                groupId: assets.id,
-                companyId: companyId
-            }
-        });
+            const apSub = await prisma.accountsubgroup.create({
+                data: { name: 'Accounts Payable', groupId: liabilitiesGroup.id, companyId }
+            });
 
-        // Create Sub Groups under Liabilities
-        const accountsPayable = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Accounts Payable',
-                groupId: liabilities.id,
-                companyId: companyId
-            }
-        });
+            const taxSub = await prisma.accountsubgroup.create({
+                data: { name: 'Duties & Taxes', groupId: liabilitiesGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'VAT / Sales Tax Payable', groupId: liabilitiesGroup.id, subGroupId: taxSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        // Create Sub Groups under Income
-        const salesIncome = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Sales Income',
-                groupId: income.id,
-                companyId: companyId
-            }
-        });
+            const loansSub = await prisma.accountsubgroup.create({
+                data: { name: 'Loans & Borrowings', groupId: liabilitiesGroup.id, companyId }
+            });
 
-        const serviceIncome = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Service Income',
-                groupId: income.id,
-                companyId: companyId
-            }
-        });
+            // 3. EQUITY
+            const equityGroup = await prisma.accountgroup.create({
+                data: { name: 'Equity', type: 'EQUITY', companyId }
+            });
 
-        const otherIncome = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Other Income',
-                groupId: income.id,
-                companyId: companyId
-            }
-        });
+            const capitalSub = await prisma.accountsubgroup.create({
+                data: { name: 'Share Capital', groupId: equityGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Owner Investment / Capital', groupId: equityGroup.id, subGroupId: capitalSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        // Create Sub Groups under Expenses
-        const directExpenses = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Direct Expenses',
-                groupId: expenses.id,
-                companyId: companyId
-            }
-        });
+            const equityItemsSub = await prisma.accountsubgroup.create({
+                data: { name: 'Equity Items', groupId: equityGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Opening Balance Equity', groupId: equityGroup.id, subGroupId: equityItemsSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Retained Earnings', groupId: equityGroup.id, subGroupId: equityItemsSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        const indirectExpenses = await prisma.accountsubgroup.create({
-            data: {
-                name: 'Indirect Expenses',
-                groupId: expenses.id,
-                companyId: companyId
-            }
-        });
+            // 4. INCOME
+            const incomeGroup = await prisma.accountgroup.create({
+                data: { name: 'Income', type: 'INCOME', companyId }
+            });
 
-        // Create Default Ledgers
-        await prisma.ledger.create({
-            data: {
-                name: 'Cash in Hand',
-                groupId: assets.id,
-                subGroupId: cash.id,
-                companyId: companyId,
-                openingBalance: 0,
-                currentBalance: 0
-            }
-        });
+            const salesSub = await prisma.accountsubgroup.create({
+                data: { name: 'Sales Income', groupId: incomeGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Sales Revenue', groupId: incomeGroup.id, subGroupId: salesSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        await prisma.ledger.create({
-            data: {
-                name: 'Inventory Asset',
-                groupId: assets.id,
-                companyId: companyId,
-                openingBalance: 0,
-                currentBalance: 0
-            }
-        });
+            const otherIncomeSub = await prisma.accountsubgroup.create({
+                data: { name: 'Other Income', groupId: incomeGroup.id, companyId }
+            });
 
-        await prisma.ledger.create({
-            data: {
-                name: 'Cost of Goods Sold',
-                groupId: expenses.id,
-                subGroupId: directExpenses.id,
-                companyId: companyId,
-                openingBalance: 0,
-                currentBalance: 0
-            }
-        });
+            // 5. EXPENSES
+            const expensesGroup = await prisma.accountgroup.create({
+                data: { name: 'Expenses', type: 'EXPENSES', companyId }
+            });
 
-        await prisma.ledger.create({
-            data: {
-                name: 'Inventory Adjustment Expense',
-                groupId: expenses.id,
-                subGroupId: indirectExpenses.id,
-                companyId: companyId,
-                openingBalance: 0,
-                currentBalance: 0
-            }
-        });
+            const cogsSub = await prisma.accountsubgroup.create({
+                data: { name: 'Direct Expenses / COGS', groupId: expensesGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Cost of Goods Sold', groupId: expensesGroup.id, subGroupId: cogsSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
 
-        await prisma.ledger.create({
-            data: {
-                name: 'Opening Balance Equity',
-                groupId: equity.id,
-                companyId: companyId,
-                openingBalance: 0,
-                currentBalance: 0
-            }
-        });
+            const operatingSub = await prisma.accountsubgroup.create({
+                data: { name: 'Operating Expenses', groupId: expensesGroup.id, companyId }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Rent Expense', groupId: expensesGroup.id, subGroupId: operatingSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Electricity & Utilities', groupId: expensesGroup.id, subGroupId: operatingSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Salary & Wages', groupId: expensesGroup.id, subGroupId: operatingSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
+            await prisma.ledger.create({
+                data: { name: 'Inventory Adjustment Expense', groupId: expensesGroup.id, subGroupId: operatingSub.id, companyId, openingBalance: 0, currentBalance: 0 }
+            });
+        };
+
+        await createCOA();
 
         return {
             success: true,
-            message: 'Chart of Accounts initialized successfully'
+            message: 'Professional Chart of Accounts initialized successfully'
         };
     } catch (error) {
         console.error('Error initializing COA:', error);
         throw error;
     }
 };
+
 
 // Get Chart of Accounts
 const getChartOfAccounts = async (companyId, filters = {}) => {
@@ -353,22 +308,74 @@ const createLedger = async (data) => {
 
         const ledger = await prisma.ledger.create({
             data: {
-                id: data.id, // Optional: will only work if ID is not auto-increment or identity insert allowed/handled by logic
                 name: data.name,
                 groupId: groupId,
                 subGroupId: data.subGroupId,
                 companyId: data.companyId,
-                openingBalance: data.openingBalance || 0,
-                currentBalance: data.openingBalance || 0,
+                openingBalance: parseFloat(data.openingBalance || 0),
+                currentBalance: parseFloat(data.openingBalance || 0),
                 isControlAccount: data.isControlAccount || false,
                 isEnabled: data.isEnabled !== undefined ? data.isEnabled : true,
                 description: data.description,
                 parentLedgerId: data.parentLedgerId ? parseInt(data.parentLedgerId) : null,
                 updatedAt: new Date()
-            }
+            },
+            include: { accountgroup: true }
         });
 
+        // Accounting Logic: Professional systems balance Opening Balances against "Opening Balance Equity"
+        const openingBal = parseFloat(data.openingBalance || 0);
+        if (openingBal !== 0) {
+            try {
+                // Find or Create Opening Balance Equity ledger
+                let obeLedger = await prisma.ledger.findFirst({
+                    where: { companyId: data.companyId, name: 'Opening Balance Equity' }
+                });
+
+                if (!obeLedger) {
+                    const equityGroup = await prisma.accountgroup.findFirst({ where: { companyId: data.companyId, type: 'EQUITY' } });
+                    if (equityGroup) {
+                        obeLedger = await prisma.ledger.create({
+                            data: {
+                                name: 'Opening Balance Equity',
+                                groupId: equityGroup.id,
+                                companyId: data.companyId,
+                                isControlAccount: true
+                            }
+                        });
+                    }
+                }
+
+                if (obeLedger) {
+                    const isDrNormal = ['ASSETS', 'EXPENSES'].includes(ledger.accountgroup.type);
+                    
+                    await prisma.transaction.create({
+                        data: {
+                            date: new Date(),
+                            amount: Math.abs(openingBal),
+                            debitLedgerId: isDrNormal ? ledger.id : obeLedger.id,
+                            creditLedgerId: isDrNormal ? obeLedger.id : ledger.id,
+                            voucherType: 'JOURNAL',
+                            voucherNumber: `OB-${ledger.id}`,
+                            narration: `Opening Balance for ${ledger.name}`,
+                            companyId: data.companyId
+                        }
+                    });
+
+                    // Update OBE balance
+                    const obeChange = isDrNormal ? -openingBal : openingBal;
+                    await prisma.ledger.update({
+                        where: { id: obeLedger.id },
+                        data: { currentBalance: { increment: obeChange } }
+                    });
+                }
+            } catch (obeError) {
+                console.error('Failed to create opening balance entry:', obeError);
+            }
+        }
+
         return ledger;
+
     } catch (error) {
         console.error('Error creating ledger:', error);
         throw error;
